@@ -1,0 +1,3 @@
+# Le noyau et cli.py n'ont AUCUNE dependance.
+# Kivy sert uniquement a l'interface.
+kivy==2.3.0

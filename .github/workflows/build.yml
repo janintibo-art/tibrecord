@@ -1,0 +1,139 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Un nouveau push annule le run precedent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m unittest discover -s . -p "test_*.py" -v
+
+  windows-exe:
+    needs: tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Dependances
+        run: |
+          python -m pip install --upgrade pip
+          pip install kivy==2.3.0 pyinstaller==6.6.0
+      - name: Build exe
+        # Le runner n'a pas de carte graphique : sans ces variables,
+        # l'import de Kivy tente d'ouvrir une fenetre OpenGL, echoue,
+        # et le build reste bloque jusqu'au timeout.
+        env:
+          KIVY_WINDOW: mock
+          KIVY_GL_BACKEND: mock
+          KIVY_AUDIO: mock
+          KIVY_NO_ARGS: 1
+        run: pyinstaller packaging/tibrecord.spec --noconfirm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-windows
+          path: dist/*
+
+  android-apk:
+    needs: tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Dependances systeme
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            cmake libffi-dev libssl-dev build-essential ccache
+      - name: Installer buildozer
+        # Cython 0.29.36 va avec Python 3.11, que compile p4a v2024.01.21.
+        # Cython 3 avec ce p4a casse sur config.pxi.
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install buildozer==1.5.0 "cython==0.29.36" virtualenv
+      - name: Cache SDK / NDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: buildozer-${{ runner.os }}-
+      - name: Build APK
+        run: buildozer -v android debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-android
+          path: bin/*.apk
+
+  publier:
+    needs: [windows-exe, android-apk]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-android
+          path: livraison
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-windows
+          path: livraison/windows
+        continue-on-error: true
+      - name: Renommer proprement
+        run: |
+          cd livraison
+          v="${GITHUB_REF_NAME}"
+          for f in *.apk; do
+            [ -e "$f" ] || continue
+            mv "$f" "Tibrecord-$v.apk"
+          done
+          if [ -d windows ]; then
+            cd windows && zip -r "../Tibrecord-$v-windows.zip" . && cd ..
+            rm -rf windows
+          fi
+          ls -lh
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: livraison/*
+          generate_release_notes: true
+          body: |
+            ## Tibrecord ${{ github.ref_name }}
+
+            Enregistrement et travail du son au telephone.
+
+            **Android** : telecharge le `.apk` et installe-le
+            (autorise les sources inconnues a la premiere installation).
+
+            **Windows** : telecharge le `.zip`, decompresse, lance l'exe.

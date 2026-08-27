@@ -1,0 +1,256 @@
+"""
+Affichage de la forme d'onde, avec zoom et mesure precise.
+
+Difference avec l'onde de MOC'TA BASS : ici on peut ZOOMER et se
+DEPLACER. A fort grossissement on voit les echantillons un par un, et le
+compteur descend au dixieme de milliseconde.
+
+Ce module ne depend que de Kivy et du noyau audio.
+"""
+
+from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
+from kivy.metrics import dp
+from kivy.uix.widget import Widget
+
+from noyau import audio
+
+FOND = (0.06, 0.06, 0.08, 1)
+GRILLE = (0.22, 0.22, 0.26, 1)
+ONDE = (0.30, 0.85, 0.95, 1)
+ONDE_HORS = (0.30, 0.32, 0.38, 1)
+SELECTION = (0.30, 0.85, 0.95, 0.13)
+POIGNEE = (0.95, 0.55, 0.15, 1)
+TETE = (1.0, 0.85, 0.25, 1)
+
+
+class Onde(Widget):
+    """Forme d'onde zoomable.
+
+    Reperes :
+      fenetre  (debut, fin) en fraction du son entier : ce qu'on voit
+      selection (debut, fin) en fraction du son entier : ce qu'on garde
+      tete      position de lecture, en fraction, ou None
+    """
+
+    ZOOMS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+
+    def __init__(self, on_change=None, **kw):
+        super().__init__(**kw)
+        self.sample = None
+        self._pics = []
+        self._fenetre_calculee = None
+        self.fen_debut, self.fen_fin = 0.0, 1.0
+        self.sel_debut, self.sel_fin = 0.0, 1.0
+        self.tete = None
+        self.on_change = on_change
+        self._prise = None
+        self.bind(pos=self.redessiner, size=self.redessiner)
+
+    # ------------------------------------------------------------ donnees
+    def charger(self, sample):
+        self.sample = sample
+        self.fen_debut, self.fen_fin = 0.0, 1.0
+        self.sel_debut, self.sel_fin = 0.0, 1.0
+        self.tete = None
+        self._pics = []
+        self._fenetre_calculee = None
+        self.redessiner()
+
+    @property
+    def zoom(self):
+        largeur = max(self.fen_fin - self.fen_debut, 1e-9)
+        return 1.0 / largeur
+
+    def duree_ms(self):
+        return self.sample.duration_ms if self.sample else 0.0
+
+    def bornes_ms(self):
+        d = self.duree_ms()
+        return self.sel_debut * d, self.sel_fin * d
+
+    def echantillons(self):
+        """Indices d'echantillon de la selection : la mesure exacte."""
+        if not self.sample:
+            return 0, 0
+        n = len(self.sample.data)
+        return int(self.sel_debut * n), int(self.sel_fin * n)
+
+    # ------------------------------------------------------------ zoom
+    def zoomer(self, facteur):
+        """Zoome autour du centre de la fenetre."""
+        centre = (self.fen_debut + self.fen_fin) / 2.0
+        largeur = (self.fen_fin - self.fen_debut) / facteur
+        largeur = max(1e-5, min(1.0, largeur))
+        self._poser_fenetre(centre - largeur / 2, centre + largeur / 2)
+
+    def cadrer_selection(self):
+        """Ajuste la fenetre a la selection, avec une marge."""
+        marge = max((self.sel_fin - self.sel_debut) * 0.1, 1e-5)
+        self._poser_fenetre(self.sel_debut - marge, self.sel_fin + marge)
+
+    def tout_voir(self):
+        self._poser_fenetre(0.0, 1.0)
+
+    def _poser_fenetre(self, d, f):
+        largeur = max(1e-5, min(1.0, f - d))
+        d = max(0.0, min(1.0 - largeur, d))
+        self.fen_debut, self.fen_fin = d, d + largeur
+        self._pics = []
+        self.redessiner()
+        if self.on_change:
+            self.on_change()
+
+    def deplacer(self, fraction):
+        largeur = self.fen_fin - self.fen_debut
+        self._poser_fenetre(self.fen_debut + largeur * fraction,
+                            self.fen_fin + largeur * fraction)
+
+    # ------------------------------------------------------------ pics
+    def _calculer(self):
+        """Min et max par colonne, sur la fenetre visible seulement."""
+        if self.sample is None or self.width < 10:
+            self._pics = []
+            return
+        cle = (round(self.fen_debut, 6), round(self.fen_fin, 6),
+               int(self.width))
+        if cle == self._fenetre_calculee and self._pics:
+            return
+        d = self.sample.data
+        n = len(d)
+        i0 = max(0, int(self.fen_debut * n))
+        i1 = min(n, max(i0 + 1, int(self.fen_fin * n)))
+        colonnes = max(40, int(self.width / dp(1.2)))
+        pas = (i1 - i0) / float(colonnes)
+        pics = []
+        for c in range(colonnes):
+            a = i0 + int(c * pas)
+            b = max(a + 1, i0 + int((c + 1) * pas))
+            bloc = d[a:min(b, n)]
+            if bloc:
+                pics.append((min(bloc), max(bloc)))
+        self._pics = pics
+        self._fenetre_calculee = cle
+
+    # ------------------------------------------------------------ dessin
+    def redessiner(self, *_a):
+        self.canvas.clear()
+        self._calculer()
+        x0, y0, w, h = self.x, self.y, self.width, self.height
+        mid = y0 + h / 2.0
+        demi = h / 2.0 - dp(4)
+
+        with self.canvas:
+            Color(*FOND)
+            RoundedRectangle(pos=(x0, y0), size=(w, h), radius=[8])
+
+            # reperes de temps : une ligne par division visible
+            Color(*GRILLE)
+            for i in range(1, 8):
+                x = x0 + w * i / 8.0
+                Line(points=[x, y0, x, y0 + h], width=1)
+            Line(points=[x0, mid, x0 + w, mid], width=1)
+
+            if not self._pics:
+                return
+
+            # selection, ramenee aux coordonnees de la fenetre
+            largeur = max(self.fen_fin - self.fen_debut, 1e-9)
+            sa = (self.sel_debut - self.fen_debut) / largeur
+            sb = (self.sel_fin - self.fen_debut) / largeur
+            if sb > 0 and sa < 1:
+                ga = x0 + max(0.0, sa) * w
+                gb = x0 + min(1.0, sb) * w
+                Color(*SELECTION)
+                Rectangle(pos=(ga, y0), size=(max(gb - ga, 1), h))
+
+            n = len(self._pics)
+            gros = self.zoom > 40
+            for i, (mn, mx) in enumerate(self._pics):
+                f = i / float(n)
+                x = x0 + (i + 0.5) * w / n
+                dans = sa <= f <= sb
+                Color(*(ONDE if dans else ONDE_HORS))
+                ymin = mid + max(mn, -1.0) * demi
+                ymax = mid + min(mx, 1.0) * demi
+                if ymax - ymin < 1:
+                    ymax = ymin + 1
+                Line(points=[x, ymin, x, ymax],
+                     width=dp(1.4) if gros else 1)
+
+            # poignees
+            for xs in (sa, sb):
+                if not 0 <= xs <= 1:
+                    continue
+                xh = x0 + xs * w
+                Color(*POIGNEE)
+                Line(points=[xh, y0, xh, y0 + h], width=dp(2))
+                RoundedRectangle(pos=(xh - dp(6), y0 + h - dp(16)),
+                                 size=(dp(12), dp(16)), radius=[3])
+                RoundedRectangle(pos=(xh - dp(6), y0),
+                                 size=(dp(12), dp(16)), radius=[3])
+
+            if self.tete is not None:
+                ft = (self.tete - self.fen_debut) / largeur
+                if 0 <= ft <= 1:
+                    Color(*TETE)
+                    Line(points=[x0 + ft * w, y0, x0 + ft * w, y0 + h],
+                         width=dp(1.5))
+
+    # ------------------------------------------------------------ touches
+    def _fraction(self, x):
+        f = (x - self.x) / float(self.width or 1)
+        largeur = self.fen_fin - self.fen_debut
+        return max(0.0, min(1.0, self.fen_debut + f * largeur))
+
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos) or self.sample is None:
+            return False
+        f = self._fraction(touch.x)
+        self._prise = ("debut" if abs(f - self.sel_debut)
+                       <= abs(f - self.sel_fin) else "fin")
+        self._appliquer(f)
+        return True
+
+    def on_touch_move(self, touch):
+        if self._prise is None:
+            return False
+        self._appliquer(self._fraction(touch.x))
+        return True
+
+    def on_touch_up(self, touch):
+        if self._prise is None:
+            return False
+        self._prise = None
+        return True
+
+    def _appliquer(self, f):
+        mini = 1e-5
+        if self._prise == "debut":
+            self.sel_debut = min(f, self.sel_fin - mini)
+        else:
+            self.sel_fin = max(f, self.sel_debut + mini)
+        self.sel_debut = max(0.0, self.sel_debut)
+        self.sel_fin = min(1.0, self.sel_fin)
+        self.redessiner()
+        if self.on_change:
+            self.on_change()
+
+
+def horloge(secondes, precision=3):
+    """0:01.234 — et au dixieme de ms quand on zoome fort."""
+    if secondes < 0:
+        secondes = 0
+    m = int(secondes // 60)
+    r = secondes % 60
+    return "%d:%0*.*f" % (m, precision + 3, precision, r)
+
+
+def position_texte(onde, fraction):
+    """Temps et numero d'echantillon a une position donnee."""
+    if onde.sample is None:
+        return "-"
+    d = onde.duree_ms() / 1000.0
+    n = len(onde.sample.data)
+    precision = 4 if onde.zoom > 40 else 3
+    return "%s  |  ech. %d" % (horloge(fraction * d, precision),
+                               int(fraction * n))
