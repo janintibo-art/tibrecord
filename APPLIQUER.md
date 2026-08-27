@@ -1,20 +1,19 @@
-# Patch 12 — a poser par-dessus le patch 11
+# Patch 13 — a poser par-dessus le patch 12
 
-Version 0.4.0 : le studio mobile, etapes 1 et 2.
+Version 0.5.0 : mini-formes d'onde dans la bibliotheque (etape 3).
 
-1. TRAITEMENTS EN ARRIERE-PLAN
-   Presets et rack tournent dans un fil separe, avec une fenetre de
-   patience et le temps qui defile. L'application ne se fige plus,
-   Android ne la tue plus sur les longues prises.
-   Un seul traitement a la fois : le deuxieme appui est refuse.
+- Chaque ligne de SONS montre la silhouette du son, calculee par
+  lecture decimee (6 ms au lieu de 2 s sur un WAV de 3 minutes).
+- Cache .vignettes.json par dossier : rien n'est recalcule tant que
+  le fichier n'a pas change. La cle est le nom du fichier : le cache
+  survit au renommage du dossier.
+- Le calcul des silhouettes manquantes se fait en arriere-plan : la
+  liste s'affiche d'abord, les silhouettes se posent apres.
+- Correction liee : le cache ne bloque plus la suppression d'un
+  dossier vide de sons.
 
-2. TRANSPORT COMPLET dans EDITION
-   RETOUR / LIRE / PAUSE / STOP sous le compteur.
-   PAUSE retient la position exacte, LIRE reprend de la.
-   Les carres vides devant LIRE et STOP (glyphes absents de la
-   police Android) sont remplaces par du texte.
+Fichiers : main.py, noyau/vignettes.py, noyau/bibliotheque.py,
+noyau/__init__.py, tests/test_vignettes.py, tests/test_bibliotheque.py,
+tests/verificateur.py.
 
-Fichiers : main.py, noyau/travail.py, noyau/__init__.py,
-tests/test_travail.py.
-
-Tests attendus : 124.
+Tests attendus : 138.

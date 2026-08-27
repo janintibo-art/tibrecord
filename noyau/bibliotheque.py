@@ -225,14 +225,25 @@ def renommer_dossier(racine, ancien, nouveau):
     return dst
 
 
+# Fichiers de service que l'application pose elle-meme dans les
+# dossiers. Ils ne comptent pas comme du contenu.
+FICHIERS_SERVICE = (".vignettes.json",)
+
+
 def supprimer_dossier(racine, nom):
     """Efface un sous-dossier VIDE seulement.
 
     Volontairement strict : un dossier plein s'efface fichier par
-    fichier, pour qu'on voie ce qu'on perd.
+    fichier, pour qu'on voie ce qu'on perd. Les fichiers de service que
+    l'application a poses elle-meme (le cache des vignettes) ne comptent
+    pas : un dossier dont on a retire tous les sons doit se supprimer.
     """
     chemin = os.path.join(racine, nom)
     try:
+        for service in FICHIERS_SERVICE:
+            f = os.path.join(chemin, service)
+            if os.path.isfile(f):
+                os.remove(f)
         os.rmdir(chemin)
         return True
     except OSError:

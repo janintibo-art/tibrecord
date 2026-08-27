@@ -95,6 +95,17 @@ class TestBibliotheque(unittest.TestCase):
         self.assertFalse(bib.supprimer_dossier(self.racine, "kicks"))
         self.assertEqual(bib.lister_dossiers(self.racine), ["kicks"])
 
+    def test_supprimer_un_dossier_vide_malgre_le_cache_des_vignettes(self):
+        """Le cache .vignettes.json est pose par l'application : il ne
+        doit pas empecher la suppression d'un dossier vide de sons."""
+        from noyau import vignettes as vig
+        d = bib.creer_dossier(self.racine, "kicks")
+        c = poser_wav(d, "kick")
+        vig.completer(d, [c])
+        bib.supprimer(c)
+        self.assertTrue(bib.supprimer_dossier(self.racine, "kicks"))
+        self.assertEqual(bib.lister_dossiers(self.racine), [])
+
     def test_supprimer_un_dossier_vide_fonctionne(self):
         bib.creer_dossier(self.racine, "vide")
         self.assertTrue(bib.supprimer_dossier(self.racine, "vide"))

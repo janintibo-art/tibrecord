@@ -46,7 +46,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
 from noyau import (__version__, audio, bibliotheque as bib,
-                   enregistrement, stockage, travail)
+                   enregistrement, stockage, travail, vignettes)
 from noyau.temps import horloge_precise
 from onde import Onde, Regle, horloge, position_texte
 
@@ -1834,6 +1834,46 @@ class Compteur(BoxLayout):
         self.lbl_detail.text = ""
 
 
+class MiniOnde(Widget):
+    """Silhouette d'un son : de petites barres verticales.
+
+    Assez pour distinguer un kick d'une voix d'une nappe, sans lire le
+    nom. Le dessin est statique : aucun recalcul tant que les pics ne
+    changent pas.
+    """
+
+    def __init__(self, pics=None, **kw):
+        super().__init__(**kw)
+        self.pics = pics or []
+        self.bind(pos=self.redessiner, size=self.redessiner)
+
+    def poser(self, pics):
+        self.pics = pics or []
+        self.redessiner()
+
+    def redessiner(self, *_a):
+        self.canvas.clear()
+        x0, y0, w, h = self.x, self.y, self.width, self.height
+        with self.canvas:
+            Color(0.030, 0.036, 0.046, 1)
+            RoundedRectangle(pos=(x0, y0), size=(w, h), radius=[6])
+            if not self.pics:
+                # Pas encore calculee : un trait au milieu, pour dire
+                # "ca vient" sans faire croire a un son muet.
+                Color(0.20, 0.23, 0.28, 1)
+                Line(points=[x0 + dp(4), y0 + h / 2,
+                             x0 + w - dp(4), y0 + h / 2], width=1)
+                return
+            n = len(self.pics)
+            mid = y0 + h / 2.0
+            demi = h / 2.0 - dp(2)
+            Color(0.18, 0.72, 0.80, 1)
+            for i, v in enumerate(self.pics):
+                x = x0 + dp(3) + (w - dp(6)) * (i + 0.5) / n
+                haut = max(dp(1), min(1.0, v) * demi)
+                Line(points=[x, mid - haut, x, mid + haut], width=dp(1.3))
+
+
 class EcranBiblio(BoxLayout):
     """Bibliotheque : ranger, retrouver, renommer les prises.
 
@@ -1849,6 +1889,8 @@ class EcranBiblio(BoxLayout):
         self.dossier_courant = bib.RACINE
         self.tri = "date"
         self.recherche = ""
+        self._vignettes = {}
+        self._calcul_vignettes = travail.Serie()
 
         self.add_widget(TitreSection(
             "Bibliotheque", "Retrouver, classer et rouvrir les prises enregistrees"))
@@ -1977,8 +2019,21 @@ class EcranBiblio(BoxLayout):
             self.dossier_courant = bib.RACINE
             self.spin_dossier.text = bib.RACINE
 
-        items = bib.lister_sons(self.chemin_dossier())
+        dossier = self.chemin_dossier()
+        items = bib.lister_sons(dossier)
         total = len(items)
+
+        # Les silhouettes du cache arrivent tout de suite, sans lire un
+        # seul WAV. Ce qui manque part en arriere-plan : la liste
+        # s'affiche d'abord, les silhouettes se posent apres.
+        self._vignettes, manquants = vignettes.pour_items(dossier, items)
+        if manquants and not self._calcul_vignettes.occupe:
+            self._calcul_vignettes.lancer(
+                lambda d=dossier, m=list(manquants): vignettes.completer(d, m),
+                lambda _n: self.rafraichir(),
+                lambda e: self.journal("Vignettes : %s" % e),
+                lambda fn: Clock.schedule_once(fn, 0))
+
         items = bib.chercher(items, self.recherche)
         items = bib.trier(items, self.tri)
 
@@ -2001,17 +2056,27 @@ class EcranBiblio(BoxLayout):
         self.lbl_etat.text = "%s   %s" % (vu, bib.duree_courte(duree))
 
     def _ligne(self, item):
+        rangee = BoxLayout(size_hint_y=None, height=dp(60), spacing=dp(5))
+        mini = MiniOnde(self._vignettes.get(item["chemin"]),
+                        size_hint_x=None, width=dp(78))
+        # La silhouette repond au doigt comme le reste de la ligne :
+        # une zone morte au milieu d'une rangee surprend toujours.
+        mini.on_touch_down = (lambda t, i=item, m=mini:
+                              m.collide_point(*t.pos)
+                              and (self.menu(i) or True))
+        rangee.add_widget(mini)
         b = Bouton(text=(
             "[color=#63dce7][b]WAV[/b][/color]   [b]%s[/b]\n"
             "[size=10sp][color=#7f8999]DUREE  %s     TAILLE  %s[/color][/size]"
             % (item["nom"], bib.duree_courte(item["duree_ms"]),
                bib.taille_courte(item["taille"]))),
             couleur=(0.085, 0.095, 0.116, 1), markup=True, halign="left",
-            size_hint_y=None, height=dp(60), font_size=dp(13), rayon=9)
+            font_size=dp(13), rayon=9)
         b.bind(size=lambda w, v: setattr(w, "text_size",
                                          (v[0] - dp(16), v[1])))
         b.bind(on_release=lambda w, i=item: self.menu(i))
-        return b
+        rangee.add_widget(b)
+        return rangee
 
     # ------------------------------------------------------------ menu
     def menu(self, item):
@@ -2198,8 +2263,15 @@ RACK STUDIO
   APPLIQUER RACK modifie le son et reste annulable avec ANNULER.
 
 SONS
-  Tes prises rangees. Choisis un dossier en haut, cherche par nom,
-  trie par date, nom, duree ou taille.
+  Tes prises rangees. Chaque ligne montre la silhouette du son :
+  un kick, une voix et une nappe ne se ressemblent pas, on les
+  reconnait sans lire le nom.
+  Les silhouettes se calculent une seule fois puis sont gardees en
+  memoire dans le dossier (.vignettes.json). A la premiere ouverture
+  d'un dossier plein, elles apparaissent quelques secondes apres la
+  liste : c'est normal, ca ne se reproduira pas.
+  Choisis un dossier en haut, cherche par nom, trie par date, nom,
+  duree ou taille.
   Appuie sur un son pour l'ouvrir dans EDITION, l'ecouter, le renommer,
   le deplacer dans un dossier ou le supprimer.
   + Dossier cree un rangement : kicks, voix, ambiances...

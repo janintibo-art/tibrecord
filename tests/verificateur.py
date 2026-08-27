@@ -158,7 +158,7 @@ def horloges_non_arretees(fichier):
 # vraiment dans la classe.
 
 MODULES_NOYAU = ("audio", "bibliotheque", "enregistrement", "stockage",
-                 "temps")
+                 "temps", "travail", "vignettes")
 
 
 def _classes_du_noyau():
