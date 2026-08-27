@@ -10,6 +10,7 @@ Trois ecrans pour demarrer :
 Sans Kivy : utiliser cli.py.
 """
 
+import math
 import os
 import sys
 import tempfile
@@ -28,7 +29,8 @@ except ImportError:  # pragma: no cover
 from kivy.app import App
 from kivy.clock import Clock, mainthread
 from kivy.core.window import Window
-from kivy.graphics import Color, Line, RoundedRectangle, Triangle
+from kivy.graphics import (Color, Ellipse, Line, Rectangle,
+                           RoundedRectangle, Triangle)
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -41,19 +43,28 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
 
 from noyau import __version__, audio, bibliotheque as bib, enregistrement
 from noyau.temps import horloge_precise
 from onde import Onde, Regle, horloge, position_texte
 
 # ---------------------------------------------------------------- palette
-FOND = (0.055, 0.055, 0.07, 1)
-PANNEAU = (0.10, 0.10, 0.13, 1)
-CYAN = (0.16, 0.80, 0.86, 1)
-CYAN_S = (0.08, 0.38, 0.42, 1)
-ROUGE = (0.88, 0.24, 0.24, 1)
-VERT = (0.16, 0.62, 0.35, 1)
-GRIS = (0.19, 0.19, 0.23, 1)
+# Direction visuelle : console de studio sombre, contraste net, cyan froid
+# pour les actions principales et rouge reserve a l'enregistrement/danger.
+FOND = (0.030, 0.033, 0.043, 1)
+FOND_HAUT = (0.055, 0.064, 0.078, 1)
+FOND_BAS = (0.018, 0.020, 0.028, 1)
+PANNEAU = (0.080, 0.086, 0.103, 1)
+PANNEAU_2 = (0.105, 0.112, 0.132, 1)
+BORD = (0.19, 0.22, 0.27, 1)
+CYAN = (0.12, 0.76, 0.84, 1)
+CYAN_S = (0.055, 0.31, 0.36, 1)
+ROUGE = (0.92, 0.20, 0.23, 1)
+VERT = (0.15, 0.68, 0.40, 1)
+ORANGE = (0.95, 0.58, 0.15, 1)
+AMBRE = (1.00, 0.73, 0.20, 1)
+GRIS = (0.155, 0.165, 0.195, 1)
 # Rouge eteint : signale la suppression sans crier plus fort que le reste.
 ROUGE_SOMBRE = (0.42, 0.16, 0.16, 1)
 # Le petit ecran de temps : fond presque noir, chiffres cyan, comme un
@@ -64,9 +75,9 @@ ECRAN_BORD = (0.16, 0.30, 0.32, 1)
 ECRAN_TEXTE = (0.35, 0.92, 0.98, 1)
 ECRAN_TEXTE_LECTURE = (1.0, 0.85, 0.25, 1)
 ECRAN_TEXTE_2 = (0.42, 0.60, 0.63, 1)
-GRIS_CHOIX = (0.27, 0.27, 0.33, 1)
-TEXTE = (0.90, 0.90, 0.92, 1)
-TEXTE_2 = (0.62, 0.62, 0.68, 1)
+GRIS_CHOIX = (0.205, 0.218, 0.255, 1)
+TEXTE = (0.93, 0.94, 0.96, 1)
+TEXTE_2 = (0.60, 0.64, 0.71, 1)
 
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ
 TMP = tempfile.mkdtemp(prefix="tibrecord_")
@@ -216,6 +227,32 @@ def texture_relief(couleur, presse=False, hauteur=64):
     return tex
 
 
+def texture_degrade(couleur_bas, couleur_haut, hauteur=160):
+    """Texture verticale legere pour le fond general de l'application."""
+    cle = ("fond", tuple(couleur_bas[:3]), tuple(couleur_haut[:3]), hauteur)
+    tex = _TEXTURES.get(cle)
+    if tex is not None:
+        return tex
+    try:
+        from kivy.graphics.texture import Texture
+    except Exception:  # noqa: BLE001
+        return None
+    tex = Texture.create(size=(1, hauteur), colorfmt="rgba")
+    buf = bytearray()
+    for i in range(hauteur):
+        t = i / float(max(1, hauteur - 1))
+        # Beaucoup de sombre en bas, une lumiere tres discrete en haut.
+        t = t * t * (3.0 - 2.0 * t)
+        for c in range(3):
+            v = couleur_bas[c] + (couleur_haut[c] - couleur_bas[c]) * t
+            buf.append(int(max(0.0, min(1.0, v)) * 255))
+        buf.append(255)
+    tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
+    tex.wrap = "clamp_to_edge"
+    _TEXTURES[cle] = tex
+    return tex
+
+
 class Bouton(Button):
     """Bouton en relief : ombre portee, degrade, liseres.
 
@@ -342,52 +379,295 @@ class Choix(Spinner):
 
 
 class Panneau(BoxLayout):
-    def __init__(self, fond=PANNEAU, rayon=10, **kw):
+    """Carte de studio : ombre, surface, bord fin et accent optionnel."""
+
+    def __init__(self, fond=PANNEAU, rayon=12, accent=None, **kw):
         super().__init__(**kw)
+        self._rayon = rayon
+        self._accent = accent
         with self.canvas.before:
-            Color(*fond)
+            self._c_ombre = Color(0, 0, 0, 0.42)
+            self._ombre = RoundedRectangle(radius=[rayon])
+            self._c_fond = Color(*fond)
             self._r = RoundedRectangle(radius=[rayon])
+        with self.canvas.after:
+            self._c_bord = Color(*BORD)
+            self._bord = Line(width=1.0)
+            self._c_accent = Color(*(accent or CYAN))
+            self._trait = RoundedRectangle(radius=[2])
+            self._c_accent.a = 1.0 if accent else 0.0
         self.bind(pos=self._maj, size=self._maj)
+        self._maj()
 
     def _maj(self, *_a):
-        self._r.pos, self._r.size = self.pos, self.size
+        x, y = self.x, self.y
+        w, h = self.width, self.height
+        self._ombre.pos = (x, y - dp(2))
+        self._ombre.size = (w, h + dp(2))
+        self._r.pos, self._r.size = (x, y), (w, h)
+        self._bord.rounded_rectangle = (x, y, w, h, self._rayon)
+        self._trait.pos = (x + dp(9), y + h - dp(3))
+        self._trait.size = (max(0, w - dp(18)), dp(2))
+
+
+class TitreSection(Label):
+    """Petit titre technique qui structure les ecrans sans les surcharger."""
+
+    def __init__(self, titre, sous_titre="", **kw):
+        texte = "[b]%s[/b]" % titre.upper()
+        if sous_titre:
+            texte += "\n[size=10sp][color=#7f8999]%s[/color][/size]" % sous_titre
+        kw.setdefault("text", texte)
+        kw.setdefault("markup", True)
+        kw.setdefault("color", TEXTE)
+        kw.setdefault("font_size", dp(13))
+        kw.setdefault("size_hint_y", None)
+        kw.setdefault("height", dp(42 if sous_titre else 28))
+        kw.setdefault("halign", "left")
+        kw.setdefault("valign", "middle")
+        super().__init__(**kw)
+        self.bind(size=lambda w, v: setattr(w, "text_size", v))
 
 
 class VuMetre(BoxLayout):
-    """Barre de niveau, verte puis orange puis rouge."""
+    """Vu-metre segmente type rack de studio, avec memoire de crete."""
+
+    NB = 28
 
     def __init__(self, **kw):
         super().__init__(**kw)
         self.niveau = 0.0
         self.crete = 0.0
+        self._segments = []
         with self.canvas:
-            Color(0.10, 0.10, 0.13, 1)
-            self._fond = RoundedRectangle(radius=[4])
-            self._c = Color(*VERT)
-            self._barre = RoundedRectangle(radius=[4])
-            self._cc = Color(1, 1, 1, 0.8)
+            Color(0.025, 0.028, 0.036, 1)
+            self._fond = RoundedRectangle(radius=[6])
+            for _ in range(self.NB):
+                c = Color(0.10, 0.12, 0.14, 1)
+                r = RoundedRectangle(radius=[2])
+                self._segments.append((c, r))
+            self._cc = Color(0.95, 0.98, 1.0, 0.92)
             self._pic = RoundedRectangle(radius=[1])
         self.bind(pos=self._maj, size=self._maj)
+        self._maj()
 
     def poser(self, niveau_db):
-        v = max(0.0, min(1.0, (niveau_db + 60.0) / 60.0))
-        self.niveau = v
-        self.crete = max(self.crete * 0.94, v)
-        if niveau_db > -1.0:
-            self._c.rgba = ROUGE
-        elif niveau_db > -8.0:
-            self._c.rgba = (0.95, 0.62, 0.15, 1)
-        else:
-            self._c.rgba = VERT
+        self.niveau = max(0.0, min(1.0, (niveau_db + 60.0) / 60.0))
+        self.crete = max(self.crete * 0.94, self.niveau)
         self._maj()
 
     def _maj(self, *_a):
         self._fond.pos, self._fond.size = self.pos, self.size
-        self._barre.pos = self.pos
-        self._barre.size = (self.width * self.niveau, self.height)
-        x = self.x + self.width * self.crete
-        self._pic.pos = (max(self.x, x - dp(2)), self.y)
-        self._pic.size = (dp(2), self.height)
+        espace = dp(2)
+        marge = dp(4)
+        dispo = max(1, self.width - marge * 2 - espace * (self.NB - 1))
+        sw = max(dp(2), dispo / float(self.NB))
+        h = max(dp(4), self.height - marge * 2)
+        allumes = int(round(self.niveau * self.NB))
+        for i, (c, r) in enumerate(self._segments):
+            f = (i + 1) / float(self.NB)
+            actif = i < allumes
+            if f > 0.93:
+                base = ROUGE
+            elif f > 0.78:
+                base = ORANGE
+            else:
+                base = VERT
+            if actif:
+                c.rgba = base
+            else:
+                c.rgba = (base[0] * 0.15, base[1] * 0.15,
+                          base[2] * 0.15, 0.72)
+            r.pos = (self.x + marge + i * (sw + espace), self.y + marge)
+            r.size = (sw, h)
+        x = self.x + marge + max(0.0, min(1.0, self.crete)) * max(1, self.width - 2 * marge)
+        self._pic.pos = (max(self.x + marge, min(self.right - marge - dp(2), x - dp(1))),
+                         self.y + dp(2))
+        self._pic.size = (dp(2), max(dp(2), self.height - dp(4)))
+
+
+class VoyantRec(Widget):
+    """Voyant REC anime, volontairement discret quand il est inactif.
+
+    L'animation ne tourne QUE pendant la capture. Au repos le voyant ne
+    change pas d'aspect : faire tourner une horloge a 24 images par
+    seconde pour redessiner trois ellipses identiques ne se verrait pas
+    a l'ecran, mais se paierait en batterie du lancement a la fermeture.
+    """
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.actif = False
+        self._phase = 0.0
+        self._tic = None
+        with self.canvas:
+            self._c_halo = Color(ROUGE[0], ROUGE[1], ROUGE[2], 0.0)
+            self._halo = Ellipse()
+            self._c_led = Color(0.28, 0.10, 0.11, 1)
+            self._led = Ellipse()
+            self._c_reflet = Color(1, 1, 1, 0.12)
+            self._reflet = Ellipse()
+        self.bind(pos=self._maj, size=self._maj)
+        self._maj()
+
+    def poser(self, actif):
+        self.actif = bool(actif)
+        if self.actif and self._tic is None:
+            self._tic = Clock.schedule_interval(self._animer, 1 / 24.0)
+        elif not self.actif and self._tic is not None:
+            self._tic.cancel()
+            self._tic = None
+            self._phase = 0.0
+        self._maj()
+
+    def _animer(self, dt):
+        self._phase = (self._phase + dt * 2.4) % 1.0
+        self._maj()
+
+    def _maj(self, *_a):
+        d = min(self.width, self.height)
+        cx, cy = self.center
+        pulse = 0.5 + 0.5 * math.sin(self._phase * math.pi * 2.0)
+        hd = d * (0.90 + (0.20 * pulse if self.actif else 0.0))
+        self._halo.pos = (cx - hd / 2, cy - hd / 2)
+        self._halo.size = (hd, hd)
+        self._c_halo.a = (0.10 + 0.18 * pulse) if self.actif else 0.0
+        ld = d * 0.50
+        self._led.pos = (cx - ld / 2, cy - ld / 2)
+        self._led.size = (ld, ld)
+        self._c_led.rgba = ROUGE if self.actif else (0.30, 0.11, 0.12, 1)
+        rd = ld * 0.28
+        self._reflet.pos = (cx - ld * 0.18, cy + ld * 0.04)
+        self._reflet.size = (rd, rd)
+        self._c_reflet.a = 0.35 if self.actif else 0.10
+
+
+class ScopeTempsReel(Widget):
+    """Petit oscilloscope de monitoring utilisant les derniers echantillons."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.data = []
+        self.bind(pos=self.redessiner, size=self.redessiner)
+
+    def poser(self, data):
+        self.data = list(data or [])
+        self.redessiner()
+
+    def redessiner(self, *_a):
+        self.canvas.clear()
+        x0, y0, w, h = self.x, self.y, self.width, self.height
+        with self.canvas:
+            Color(0.018, 0.022, 0.030, 1)
+            RoundedRectangle(pos=(x0, y0), size=(w, h), radius=[7])
+            Color(0.08, 0.11, 0.14, 1)
+            for i in range(1, 8):
+                x = x0 + w * i / 8.0
+                Line(points=[x, y0, x, y0 + h], width=1)
+            for i in range(1, 4):
+                y = y0 + h * i / 4.0
+                Line(points=[x0, y, x0 + w, y], width=1)
+            Color(0.16, 0.25, 0.28, 1)
+            Line(points=[x0, y0 + h / 2, x0 + w, y0 + h / 2], width=1)
+            Color(*BORD)
+            Line(rounded_rectangle=(x0, y0, w, h, 7), width=1)
+            if len(self.data) < 2 or w < 4:
+                return
+            n = min(len(self.data), max(64, int(w / max(dp(1.4), 1))))
+            src = self.data[-n:]
+            points = []
+            gain = h * 0.43
+            mid = y0 + h / 2.0
+            for i, v in enumerate(src):
+                x = x0 + i * w / float(max(1, n - 1))
+                y = mid + max(-1.0, min(1.0, v)) * gain
+                points.extend((x, y))
+            Color(CYAN[0], CYAN[1], CYAN[2], 0.15)
+            Line(points=points, width=dp(3.2))
+            Color(*CYAN)
+            Line(points=points, width=dp(1.05))
+
+
+class AnalyseurSpectre(Widget):
+    """Analyseur spectral leger, sans numpy, base sur des bandes Goertzel."""
+
+    NB = 18
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.valeurs = [0.0] * self.NB
+        self.bind(pos=self.redessiner, size=self.redessiner)
+
+    @staticmethod
+    def _goertzel(data, rate, freq):
+        if not data or rate <= 0:
+            return 0.0
+        n = len(data)
+        k = int(0.5 + n * freq / float(rate))
+        omega = 2.0 * math.pi * k / float(n)
+        coeff = 2.0 * math.cos(omega)
+        q0 = q1 = q2 = 0.0
+        for x in data:
+            q0 = x + coeff * q1 - q2
+            q2, q1 = q1, q0
+        p = q1 * q1 + q2 * q2 - coeff * q1 * q2
+        return max(p, 1e-20)
+
+    def charger(self, sample):
+        if sample is None or not sample.data or not sample.rate:
+            self.valeurs = [0.0] * self.NB
+            self.redessiner()
+            return
+        n = min(3072, len(sample.data))
+        centre = len(sample.data) // 2
+        debut = max(0, centre - n // 2)
+        bloc = list(sample.data[debut:debut + n])
+        if len(bloc) > 8:
+            den = max(1, len(bloc) - 1)
+            for i in range(len(bloc)):
+                bloc[i] *= 0.5 - 0.5 * math.cos(2.0 * math.pi * i / den)
+        f0, f1 = 55.0, min(16000.0, sample.rate * 0.44)
+        freqs = [f0 * ((f1 / f0) ** (i / float(self.NB - 1)))
+                 for i in range(self.NB)]
+        puissances = [self._goertzel(bloc, sample.rate, f) for f in freqs]
+        mx = max(puissances) if puissances else 1.0
+        vals = []
+        for p in puissances:
+            db = 10.0 * math.log10(max(p / mx, 1e-12))
+            vals.append(max(0.0, min(1.0, (db + 52.0) / 52.0)))
+        self.valeurs = vals
+        self.redessiner()
+
+    def redessiner(self, *_a):
+        self.canvas.clear()
+        x0, y0, w, h = self.x, self.y, self.width, self.height
+        with self.canvas:
+            Color(0.018, 0.022, 0.030, 1)
+            RoundedRectangle(pos=(x0, y0), size=(w, h), radius=[7])
+            Color(0.075, 0.095, 0.12, 1)
+            for j in range(1, 4):
+                y = y0 + h * j / 4.0
+                Line(points=[x0, y, x0 + w, y], width=1)
+            espace = dp(3)
+            marge = dp(7)
+            bw = max(dp(3), (w - 2 * marge - espace * (self.NB - 1)) / self.NB)
+            for i, v in enumerate(self.valeurs):
+                bh = max(dp(2), (h - dp(12)) * v)
+                bx = x0 + marge + i * (bw + espace)
+                by = y0 + dp(6)
+                if v > 0.88:
+                    col = ORANGE
+                elif v > 0.68:
+                    col = AMBRE
+                else:
+                    col = CYAN
+                Color(col[0], col[1], col[2], 0.16)
+                RoundedRectangle(pos=(bx, by), size=(bw, h - dp(12)), radius=[2])
+                Color(*col)
+                RoundedRectangle(pos=(bx, by), size=(bw, bh), radius=[2])
+            Color(*BORD)
+            Line(rounded_rectangle=(x0, y0, w, h, 7), width=1)
+
 
 
 # --------------------------------------------------------------------------
@@ -481,49 +761,96 @@ class EcranEnreg(BoxLayout):
         self.enr = enregistrement.Enregistreur()
         self._tic = None
 
-        self.add_widget(Label(text="", size_hint_y=None, height=dp(6)))
+        page = ScrollView(do_scroll_x=False)
+        corps = BoxLayout(orientation="vertical", spacing=dp(8),
+                          size_hint_y=None, padding=(0, 0, 0, dp(8)))
+        corps.bind(minimum_height=corps.setter("height"))
+        page.add_widget(corps)
+        BoxLayout.add_widget(self, page)
 
-        self.lbl_temps = Label(text="0:00.000", font_size=dp(40),
-                               size_hint_y=None, height=dp(70), color=TEXTE)
-        self.add_widget(self.lbl_temps)
+        corps.add_widget(TitreSection(
+            "Capture audio", "Monitoring temps reel et prise haute qualite"))
+
+        etat_studio = Panneau(orientation="horizontal", size_hint_y=None,
+                              height=dp(38), padding=(dp(8), dp(3)),
+                              spacing=dp(5), fond=(0.045, 0.050, 0.060, 1))
+        self.voyant_rec = VoyantRec(size_hint_x=None, width=dp(30))
+        etat_studio.add_widget(self.voyant_rec)
+        etat_studio.add_widget(Label(
+            text="[b]INPUT MONITOR[/b]   [color=#6d7787]MONO / PCM 16-bit[/color]",
+            markup=True, halign="left", valign="middle",
+            font_size=dp(10), color=TEXTE))
+        corps.add_widget(etat_studio)
+
+        afficheur = Panneau(orientation="vertical", size_hint_y=None,
+                            height=dp(100), padding=(dp(12), dp(6)),
+                            spacing=0, fond=ECRAN_FOND, accent=CYAN)
+        afficheur.add_widget(Label(text="TEMPS D'ENREGISTREMENT",
+                                   size_hint_y=None, height=dp(22),
+                                   font_size=dp(9), color=ECRAN_TEXTE_2))
+        self.lbl_temps = Label(text="0:00.000", font_size=dp(42),
+                               color=ECRAN_TEXTE)
+        afficheur.add_widget(self.lbl_temps)
+        corps.add_widget(afficheur)
 
         cadre = Panneau(orientation="vertical", size_hint_y=None,
-                        height=dp(70), padding=dp(8), spacing=dp(6))
-        self.vu = VuMetre(size_hint_y=None, height=dp(22))
+                        height=dp(94), padding=(dp(10), dp(7)), spacing=dp(5))
+        ligne_niveau = BoxLayout(size_hint_y=None, height=dp(22))
+        ligne_niveau.add_widget(Label(text="[b]INPUT[/b]", markup=True,
+                                      halign="left", font_size=dp(10),
+                                      color=TEXTE_2))
+        self.lbl_niveau = Label(text="-inf dB", font_size=dp(10),
+                                color=TEXTE_2, halign="right")
+        ligne_niveau.add_widget(self.lbl_niveau)
+        cadre.add_widget(ligne_niveau)
+        self.vu = VuMetre(size_hint_y=None, height=dp(36))
         cadre.add_widget(self.vu)
-        self.lbl_niveau = Label(text="-inf dB", font_size=dp(12),
-                                color=TEXTE_2, size_hint_y=None,
-                                height=dp(20))
-        cadre.add_widget(self.lbl_niveau)
-        self.add_widget(cadre)
+        cadre.add_widget(Label(text="-60        -24        -12       -6      0 dB",
+                               font_size=dp(8), color=(0.42, 0.46, 0.53, 1),
+                               size_hint_y=None, height=dp(16)))
+        corps.add_widget(cadre)
 
-        r = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        r.add_widget(Label(text="Qualite", size_hint_x=0.3, color=TEXTE,
-                           font_size=dp(12)))
+        scope_box = Panneau(orientation="vertical", size_hint_y=None,
+                            height=dp(96), padding=(dp(8), dp(5)),
+                            spacing=dp(3), fond=(0.040, 0.046, 0.057, 1),
+                            accent=CYAN)
+        scope_box.add_widget(Label(text="LIVE WAVEFORM", size_hint_y=None,
+                                   height=dp(16), halign="left",
+                                   font_size=dp(9), color=TEXTE_2))
+        self.scope = ScopeTempsReel()
+        scope_box.add_widget(self.scope)
+        corps.add_widget(scope_box)
+
+        reglages = Panneau(orientation="vertical", size_hint_y=None,
+                           height=dp(104), padding=dp(8), spacing=dp(4))
+        r = BoxLayout(size_hint_y=None, height=dp(43), spacing=dp(7))
+        r.add_widget(Label(text="QUALITE", size_hint_x=0.30, color=TEXTE_2,
+                           font_size=dp(10), halign="left"))
         self.spin_taux = Choix(text="44100",
-                               values=[str(t) for t in
-                                       enregistrement.TAUX_POSSIBLES])
+                               values=[str(t) for t in enregistrement.TAUX_POSSIBLES])
         r.add_widget(self.spin_taux)
-        self.add_widget(r)
+        reglages.add_widget(r)
 
-        r2 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        r2.add_widget(Label(text="Source", size_hint_x=0.3, color=TEXTE,
-                            font_size=dp(12)))
-        self.spin_source = Choix(text="micro",
-                                 values=["micro", "camera", "brut"])
+        r2 = BoxLayout(size_hint_y=None, height=dp(43), spacing=dp(7))
+        r2.add_widget(Label(text="SOURCE", size_hint_x=0.30, color=TEXTE_2,
+                            font_size=dp(10), halign="left"))
+        self.spin_source = Choix(text="micro", values=["micro", "camera", "brut"])
         r2.add_widget(self.spin_source)
-        self.add_widget(r2)
+        reglages.add_widget(r2)
+        corps.add_widget(reglages)
 
-        self.b_rec = Bouton(text="ENREGISTRER", couleur=ROUGE,
-                            size_hint_y=None, height=dp(72),
-                            font_size=dp(18))
+        self.b_rec = Bouton(
+            text="[b]●  ENREGISTRER[/b]\n[size=10sp]Nouvelle prise audio[/size]",
+            couleur=ROUGE, size_hint_y=None, height=dp(74),
+            font_size=dp(16), rayon=15)
         self.b_rec.bind(on_release=lambda *_: self.basculer())
-        self.add_widget(self.b_rec)
+        corps.add_widget(self.b_rec)
 
-        self.lbl_etat = Label(text="", size_hint_y=None, height=dp(44),
-                              font_size=dp(11), color=TEXTE_2)
-        self.add_widget(self.lbl_etat)
-        self.add_widget(BoxLayout())
+        self.lbl_etat = Label(text="Initialisation du moteur audio...",
+                              size_hint_y=None, height=dp(38),
+                              font_size=dp(10), color=TEXTE_2)
+        corps.add_widget(self.lbl_etat)
+        corps.add_widget(BoxLayout())
 
         Clock.schedule_once(lambda *_: self._verifier(), 0.6)
 
@@ -548,17 +875,26 @@ class EcranEnreg(BoxLayout):
             int(self.spin_taux.text), self.spin_source.text)
         if not self.enr.demarrer():
             return
-        self.b_rec.text = "ARRETER"
-        self.b_rec.set_couleur(GRIS)
+        self.b_rec.text = "[b]■  ARRETER[/b]\n[size=10sp]Enregistrement en cours[/size]"
+        self.b_rec.set_couleur(ROUGE_SOMBRE)
+        self.lbl_temps.color = (1.0, 0.42, 0.45, 1)
+        self.lbl_etat.text = "REC  •  capture active"
+        self.voyant_rec.poser(True)
         self.vu.crete = 0.0
-        self._tic = Clock.schedule_interval(self._maj, 1 / 20.0)
+        self.scope.poser([])
+        self._tic = Clock.schedule_interval(self._maj, 1 / 24.0)
         self.journal("Enregistrement a %s Hz." % self.spin_taux.text)
 
     def _maj(self, _dt):
         self.lbl_temps.text = horloge(self.enr.duree_s)
         db = self.enr.niveau_db()
         self.vu.poser(db)
-        self.lbl_niveau.text = ("%.1f dB" % db) if db > -90 else "-inf dB"
+        self.scope.poser(self.enr.instantane(420))
+        rms_db = audio.lin_to_db(self.enr.rms_courant)
+        if db > -90:
+            self.lbl_niveau.text = "PK %.1f  /  RMS %.1f dB" % (db, rms_db)
+        else:
+            self.lbl_niveau.text = "-inf dB"
         if self.enr.derniere_erreur:
             self.lbl_etat.text = self.enr.derniere_erreur
             self.arreter()
@@ -570,8 +906,10 @@ class EcranEnreg(BoxLayout):
             self._tic.cancel()
             self._tic = None
         sample = self.enr.arreter()
-        self.b_rec.text = "ENREGISTRER"
+        self.b_rec.text = "[b]●  ENREGISTRER[/b]\n[size=10sp]Nouvelle prise audio[/size]"
         self.b_rec.set_couleur(ROUGE)
+        self.lbl_temps.color = ECRAN_TEXTE
+        self.voyant_rec.poser(False)
         if sample is None:
             self.journal("Rien n'a ete capture. %s"
                          % (self.enr.derniere_erreur or ""))
@@ -599,12 +937,15 @@ class EcranEdit(BoxLayout):
         page.add_widget(corps)
         BoxLayout.add_widget(self, page)
 
+        corps.add_widget(TitreSection(
+            "Editeur audio", "Selection precise, lecture et traitements non destructifs"))
+
         r0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        b_o = Bouton(text="Ouvrir un WAV", couleur=CYAN)
+        b_o = Bouton(text="OUVRIR WAV", couleur=CYAN)
         b_o.bind(on_release=lambda *_: Chooser(
             self.charger_fichier, filtres=["*.wav", "*.WAV"]).open())
         r0.add_widget(b_o)
-        b_s = Bouton(text="Enregistrer", couleur=VERT)
+        b_s = Bouton(text="SAUVEGARDER", couleur=VERT)
         b_s.bind(on_release=lambda *_: self.sauver())
         r0.add_widget(b_s)
         corps.add_widget(r0)
@@ -618,7 +959,8 @@ class EcranEdit(BoxLayout):
         corps.add_widget(self.compteur)
 
         cadre = Panneau(orientation="vertical", size_hint_y=None,
-                        height=dp(272), padding=dp(6), spacing=dp(2))
+                        height=dp(292), padding=dp(7), spacing=dp(3),
+                        fond=(0.045, 0.050, 0.062, 1), accent=CYAN)
         self.onde = Onde(on_change=self._maj_mesures)
         cadre.add_widget(self.onde)
         self.regle = Regle(self.onde, size_hint_y=None, height=dp(20))
@@ -630,6 +972,22 @@ class EcranEdit(BoxLayout):
                              font_size=dp(11), color=TEXTE)
         corps.add_widget(self.lbl_mes)
 
+        spectre_box = Panneau(orientation="vertical", size_hint_y=None,
+                              height=dp(142), padding=(dp(7), dp(5)),
+                              spacing=dp(3), fond=(0.040, 0.046, 0.057, 1),
+                              accent=AMBRE)
+        spectre_box.add_widget(Label(
+            text="SPECTRUM ANALYZER", size_hint_y=None, height=dp(18),
+            font_size=dp(9), color=TEXTE_2, halign="left"))
+        self.spectre = AnalyseurSpectre()
+        spectre_box.add_widget(self.spectre)
+        spectre_box.add_widget(Label(
+            text="55 Hz          250          1 kHz          4 kHz          16 kHz",
+            size_hint_y=None, height=dp(14), font_size=dp(8),
+            color=(0.42, 0.46, 0.53, 1)))
+        corps.add_widget(spectre_box)
+
+        corps.add_widget(TitreSection("Navigation dans l'onde"))
         r_z = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         for txt, fn in (("- zoom", lambda: self.onde.zoomer(0.5)),
                         ("+ zoom", lambda: self.onde.zoomer(2.0)),
@@ -643,14 +1001,15 @@ class EcranEdit(BoxLayout):
         corps.add_widget(r_z)
 
         r_e = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        b_l = Bouton(text="> Lire la selection", couleur=VERT)
+        b_l = Bouton(text="▶  LIRE LA SELECTION", couleur=VERT)
         b_l.bind(on_release=lambda *_: self.lire())
         r_e.add_widget(b_l)
-        b_st = Bouton(text="Stop", size_hint_x=0.4)
+        b_st = Bouton(text="■  STOP", size_hint_x=0.4)
         b_st.bind(on_release=lambda *_: self.stopper())
         r_e.add_widget(b_st)
         corps.add_widget(r_e)
 
+        corps.add_widget(TitreSection("Traitements rapides"))
         r_t = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         for txt, fn in (("Rogner", self.rogner),
                         ("Normaliser", self.normaliser),
@@ -665,19 +1024,48 @@ class EcranEdit(BoxLayout):
         r_p.add_widget(Label(text="Preset", size_hint_x=0.28, color=TEXTE,
                              font_size=dp(12)))
         self.spin = Choix(text="punch", values=sorted(audio.PRESETS))
+        self.spin.bind(text=self._maj_preset)
         r_p.add_widget(self.spin)
-        b_tr = Bouton(text="Traiter", couleur=CYAN, size_hint_x=0.34)
+        b_tr = Bouton(text="APPLIQUER", couleur=CYAN, size_hint_x=0.34)
         b_tr.bind(on_release=lambda *_: self.traiter())
         r_p.add_widget(b_tr)
         corps.add_widget(r_p)
+        self.lbl_preset = Label(text="", size_hint_y=None, height=dp(42),
+                                font_size=dp(10), color=TEXTE_2,
+                                halign="left", valign="middle")
+        self.lbl_preset.bind(size=lambda w, v: setattr(w, "text_size", v))
+        corps.add_widget(self.lbl_preset)
+        self._maj_preset()
 
     # ------------------------------------------------------------ etat
     def poser(self, sample, nom=None):
         self.sample = sample
         self.historique = []
         self.onde.charger(sample)
+        self.spectre.charger(sample)
         self.lbl_nom.text = nom or sample.name
         self._maj_mesures()
+
+    def _maj_preset(self, *_a):
+        cfg = audio.PRESETS.get(self.spin.text, {})
+        self.lbl_preset.text = cfg.get("desc", "")
+
+    def sauver(self):
+        if self.sample is None:
+            self.journal("Aucun son a sauvegarder.")
+            return
+        defaut = bib.nom_propre(self.lbl_nom.text or self.sample.name, "prise")
+        NomPopup("Nom du fichier WAV", defaut, self._sauver_nom).open()
+
+    def _sauver_nom(self, nom):
+        try:
+            dossier = dossier_sons()
+            chemin = bib.chemin_libre(dossier, nom)
+            audio.write_wav(chemin, self.sample)
+            self.lbl_nom.text = os.path.splitext(os.path.basename(chemin))[0]
+            self.journal("Sauvegarde : %s" % chemin)
+        except Exception as e:  # noqa: BLE001
+            self.journal("Sauvegarde impossible : %s" % e)
 
     def charger_fichier(self, chemin):
         try:
@@ -723,6 +1111,7 @@ class EcranEdit(BoxLayout):
             return
         self.sample = self.historique.pop()
         self.onde.charger(self.sample)
+        self.spectre.charger(self.sample)
         self._maj_mesures()
         self.journal("Annule.")
 
@@ -735,6 +1124,7 @@ class EcranEdit(BoxLayout):
         i0, i1 = int(a * self.sample.rate / 1000), int(b * self.sample.rate / 1000)
         self.sample.data = self.sample.data[max(0, i0):min(n, i1)]
         self.onde.charger(self.sample)
+        self.spectre.charger(self.sample)
         self._maj_mesures()
         self.journal("Rogne : %.0f ms conserves." % self.sample.duration_ms)
 
@@ -744,6 +1134,7 @@ class EcranEdit(BoxLayout):
         self._memoriser()
         audio.normalize_peak(self.sample, -0.3)
         self.onde.charger(self.sample)
+        self.spectre.charger(self.sample)
         self.journal("Normalise a -0,3 dB.")
 
     def fondus(self):
@@ -752,6 +1143,7 @@ class EcranEdit(BoxLayout):
         self._memoriser()
         audio.fade(self.sample, 3.0, 8.0)
         self.onde.charger(self.sample)
+        self.spectre.charger(self.sample)
         self.journal("Fondus appliques.")
 
     def traiter(self):
@@ -760,6 +1152,7 @@ class EcranEdit(BoxLayout):
         self._memoriser()
         self.sample, rap = audio.process(self.sample, self.spin.text)
         self.onde.charger(self.sample)
+        self.spectre.charger(self.sample)
         self._maj_mesures()
         self.journal("%s : %+.1f dB, RMS %.1f dB" % (
             self.spin.text, rap["gain_db"], rap["apres"]["rms_db"]))
@@ -814,6 +1207,33 @@ class EcranEdit(BoxLayout):
     def stopper(self):
         arreter_lecture()
         self._arreter_tete()
+
+class HistoriquePopup(Popup):
+    """Toutes les lignes du journal, la plus recente en haut.
+
+    La barre d'etat ne montre que la derniere information, ce qui garde
+    l'ecran calme. Mais un message d'erreur chasse le precedent : sans
+    cette fenetre, la ligne qu'on cherche est perdue au moment ou on en
+    a besoin.
+    """
+
+    def __init__(self, lignes, **kw):
+        super().__init__(title="Journal", size_hint=(0.94, 0.8), **kw)
+        box = BoxLayout(orientation="vertical", spacing=dp(8),
+                        padding=dp(10))
+        sv = ScrollView(do_scroll_x=False)
+        texte = "\n".join(reversed(lignes)) if lignes else "(rien encore)"
+        lbl = Label(text=texte, size_hint_y=None, halign="left",
+                    valign="top", font_size=dp(11), color=TEXTE)
+        lbl.bind(texture_size=lambda i, v: setattr(i, "height", v[1]),
+                 width=lambda i, v: setattr(i, "text_size", (v, None)))
+        sv.add_widget(lbl)
+        box.add_widget(sv)
+        b = Bouton(text="Fermer", size_hint_y=None, height=dp(46))
+        b.bind(on_release=lambda *_: self.dismiss())
+        box.add_widget(b)
+        self.add_widget(box)
+
 
 class ChoixPopup(Popup):
     """Petit menu : un titre, une liste de boutons, une annulation.
@@ -932,26 +1352,34 @@ class EcranBiblio(BoxLayout):
         self.tri = "date"
         self.recherche = ""
 
+        self.add_widget(TitreSection(
+            "Bibliotheque", "Retrouver, classer et rouvrir les prises enregistrees"))
+
         r0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
         self.spin_dossier = Choix(text=bib.RACINE, values=[bib.RACINE])
         self.spin_dossier.bind(text=self._changer_dossier)
         r0.add_widget(self.spin_dossier)
-        b_new = Bouton(text="+ Dossier", couleur=CYAN, size_hint_x=0.38,
+        b_new = Bouton(text="+  DOSSIER", couleur=CYAN, size_hint_x=0.38,
                        font_size=dp(12))
         b_new.bind(on_release=lambda *_: self.nouveau_dossier())
         r0.add_widget(b_new)
         self.add_widget(r0)
 
         r1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        self.champ = TextInput(hint_text="chercher", multiline=False,
-                               font_size=dp(14), size_hint_x=0.5)
+        self.champ = TextInput(hint_text="Rechercher un son...", multiline=False,
+                               font_size=dp(13), size_hint_x=0.5,
+                               background_normal="", background_active="",
+                               background_color=(0.10, 0.11, 0.13, 1),
+                               foreground_color=TEXTE,
+                               hint_text_color=(0.45, 0.49, 0.56, 1),
+                               cursor_color=CYAN, padding=(dp(10), dp(10)))
         self.champ.bind(text=self._changer_recherche)
         r1.add_widget(self.champ)
         self.spin_tri = Choix(text="date", values=list(bib.TRIS),
                               size_hint_x=0.28, font_size=dp(12))
         self.spin_tri.bind(text=self._changer_tri)
         r1.add_widget(self.spin_tri)
-        b_maj = Bouton(text="Actualiser", size_hint_x=0.32, font_size=dp(11))
+        b_maj = Bouton(text="ACTUALISER", size_hint_x=0.32, font_size=dp(11))
         b_maj.bind(on_release=lambda *_: self.rafraichir())
         r1.add_widget(b_maj)
         self.add_widget(r1)
@@ -968,10 +1396,10 @@ class EcranBiblio(BoxLayout):
         self.add_widget(sv)
 
         r2 = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        b_ren = Bouton(text="Renommer le dossier", font_size=dp(11))
+        b_ren = Bouton(text="RENOMMER DOSSIER", font_size=dp(11))
         b_ren.bind(on_release=lambda *_: self.renommer_dossier())
         r2.add_widget(b_ren)
-        b_sup = Bouton(text="Supprimer le dossier", font_size=dp(11),
+        b_sup = Bouton(text="SUPPRIMER DOSSIER", font_size=dp(11),
                        couleur=ROUGE_SOMBRE)
         b_sup.bind(on_release=lambda *_: self.supprimer_dossier())
         r2.add_widget(b_sup)
@@ -1037,11 +1465,13 @@ class EcranBiblio(BoxLayout):
         self.lbl_etat.text = "%s   %s" % (vu, bib.duree_courte(duree))
 
     def _ligne(self, item):
-        b = Bouton(text="%s\n[size=10sp]%s   %s[/size]" % (
-            item["nom"], bib.duree_courte(item["duree_ms"]),
-            bib.taille_courte(item["taille"])),
-            markup=True, halign="left", size_hint_y=None, height=dp(52),
-            font_size=dp(13))
+        b = Bouton(text=(
+            "[color=#63dce7][b]WAV[/b][/color]   [b]%s[/b]\n"
+            "[size=10sp][color=#7f8999]DUREE  %s     TAILLE  %s[/color][/size]"
+            % (item["nom"], bib.duree_courte(item["duree_ms"]),
+               bib.taille_courte(item["taille"]))),
+            couleur=(0.085, 0.095, 0.116, 1), markup=True, halign="left",
+            size_hint_y=None, height=dp(60), font_size=dp(13), rayon=9)
         b.bind(size=lambda w, v: setattr(w, "text_size",
                                          (v[0] - dp(16), v[1])))
         b.bind(on_release=lambda w, i=item: self.menu(i))
@@ -1176,14 +1606,15 @@ class EcranBiblio(BoxLayout):
 class EcranTuto(BoxLayout):
     TEXTE = """Tibrecord
 
-ENREG.
-  Appuie sur ENREGISTRER. Le minuteur et le vu-metre suivent la prise.
+REC
+  Appuie sur ENREGISTRER. Le minuteur, le vu-metre et l'oscilloscope
+  suivent la prise en direct. Peak et RMS sont visibles simultanement.
   Vise entre -12 et -6 dB : au-dela le rouge signale l'ecretage.
   Qualite : 44100 Hz par defaut. Descendre economise de la place.
   Source : micro ordinaire, camera (plus directif) ou brut (sans
   traitement du telephone, quand l'appareil le permet).
 
-EDIT.
+EDITION
   La forme d'onde se ZOOME : jusqu'a voir les echantillons un par un.
   Les deux poignees orange delimitent la selection.
   Sous l'onde, la reglette donne le temps. Les grands traits sont
@@ -1194,20 +1625,22 @@ EDIT.
   de la coupe. Pendant la lecture il passe au jaune et defile, en
   meme temps que la barre sur l'onde.
   Le compteur du bas affiche la selection entiere et les numeros
-  d'echantillon.
+  d'echantillon. L'analyseur 18 bandes donne une vue rapide du contenu
+  grave / medium / aigu du son.
 
-  Rogner      reduit le son a la selection
-  Normaliser  amene la crete a -0,3 dB
-  Fondus      evite les clics au debut et a la fin
-  Traiter     applique un preset complet
-  Annuler     revient en arriere, 12 etapes
+  Rogner       reduit le son a la selection
+  Normaliser   amene la crete a -0,3 dB
+  Fondus       evite les clics au debut et a la fin
+  Traiter      applique un preset complet
+  Annuler      revient en arriere, 12 etapes
+  Sauvegarder  ecrit un WAV mono 16 bits 44,1 kHz dans la
+               bibliotheque, sans jamais ecraser un fichier
+               existant : "kick" devient "kick 2".
 
-  Enregistrer ecrit un WAV mono 16 bits 44,1 kHz.
-
-BIBLIO.
+SONS
   Tes prises rangees. Choisis un dossier en haut, cherche par nom,
   trie par date, nom, duree ou taille.
-  Appuie sur un son pour l'ouvrir dans EDIT., l'ecouter, le renommer,
+  Appuie sur un son pour l'ouvrir dans EDITION, l'ecouter, le renommer,
   le deplacer dans un dossier ou le supprimer.
   + Dossier cree un rangement : kicks, voix, ambiances...
   Un dossier ne se supprime que s'il est vide : on ne perd pas dix
@@ -1217,8 +1650,13 @@ OU SONT LES FICHIERS
   Dans le sous-dossier enregistrements/ du dossier de l'application,
   et dans ses sous-dossiers pour ce qui est range.
   Ce sont de vrais fichiers WAV : aucun catalogue cache, rien a
-  exporter. Le chemin exact s'affiche dans le journal a chaque
+  exporter. Le chemin exact s'affiche dans la barre du bas a chaque
   ecriture.
+
+LE JOURNAL
+  La barre du bas montre la derniere information. Le bouton JOURNAL,
+  a sa droite, rouvre tout l'historique : c'est la qu'on retrouve un
+  message d'erreur qui vient de passer.
 
 SI CA PLANTE
   L'application affiche la trace en vert au lieu de disparaitre, et
@@ -1261,14 +1699,25 @@ class EcranErreur(BoxLayout):
 
 # --------------------------------------------------------------------------
 class Root(BoxLayout):
-    ONGLETS = ("ENREG.", "EDIT.", "BIBLIO.", "TUTO")
+    ONGLETS = ("REC", "EDITION", "SONS", "AIDE")
 
     def __init__(self, **kw):
-        super().__init__(orientation="vertical", spacing=dp(6),
-                         padding=dp(8), **kw)
+        super().__init__(orientation="vertical", spacing=dp(7),
+                         padding=(dp(9), dp(7), dp(9), dp(8)), **kw)
+        with self.canvas.before:
+            self._c_bg = Color(1, 1, 1, 1)
+            self._bg = Rectangle()
+            tex = texture_degrade(FOND_BAS, FOND_HAUT)
+            if tex is not None:
+                self._bg.texture = tex
+            else:
+                self._c_bg.rgba = FOND
+        self.bind(pos=self._maj_fond, size=self._maj_fond)
+        self._maj_fond()
+
         self.add_widget(self._entete())
 
-        barre = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(5))
+        barre = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(5))
         self.tabs = []
         for i, nom in enumerate(self.ONGLETS):
             b = Bouton(text=nom, font_size=dp(11), rayon=6)
@@ -1280,37 +1729,51 @@ class Root(BoxLayout):
         self.zone = BoxLayout()
         self.add_widget(self.zone)
 
-        sv = ScrollView(size_hint_y=0.22)
-        self.log = Label(text="Pret.\n", size_hint_y=None, halign="left",
-                         valign="top", font_size=dp(11), color=TEXTE_2)
-        self.log.bind(texture_size=lambda i, v: setattr(i, "height", v[1]),
-                      width=lambda i, v: setattr(i, "text_size", (v, None)))
-        sv.add_widget(self.log)
-        self.add_widget(sv)
+        statut = Panneau(orientation="horizontal", size_hint_y=None,
+                          height=dp(40), padding=(dp(9), dp(3)),
+                          spacing=dp(6), fond=(0.040, 0.045, 0.055, 1))
+        statut.add_widget(Label(text="[color=#63dce7]●[/color]  SYSTEM",
+                                markup=True, size_hint_x=None, width=dp(82),
+                                halign="left", valign="middle",
+                                font_size=dp(9), color=TEXTE_2))
+        self.log = Label(text="Pret.", halign="left", valign="middle",
+                         font_size=dp(9), color=TEXTE_2, shorten=True)
+        self.log.bind(size=lambda w, v: setattr(w, "text_size", v))
+        statut.add_widget(self.log)
+        self._historique_log = ["Pret."]
+        b_hist = Bouton(text="JOURNAL", size_hint_x=None, width=dp(62),
+                        font_size=dp(9), rayon=6)
+        b_hist.bind(on_release=lambda *_: self.voir_journal())
+        statut.add_widget(b_hist)
+        self.add_widget(statut)
 
-        self.ec_edit = self._fabriquer("EDIT.", EcranEdit, self.journal)
-        self.ec_biblio = self._fabriquer("BIBLIO.", EcranBiblio,
+        self.ec_edit = self._fabriquer("EDITION", EcranEdit, self.journal)
+        self.ec_biblio = self._fabriquer("SONS", EcranBiblio,
                                          self.journal, self._ouvrir_depuis)
         self.ecrans = [
-            self._fabriquer("ENREG.", EcranEnreg, self.journal,
+            self._fabriquer("REC", EcranEnreg, self.journal,
                             self._apres_capture),
             self.ec_edit,
             self.ec_biblio,
-            self._fabriquer("TUTO", EcranTuto),
+            self._fabriquer("AIDE", EcranTuto),
         ]
         self.afficher(0)
+
+    def _maj_fond(self, *_a):
+        self._bg.pos, self._bg.size = self.pos, self.size
 
     @staticmethod
     def _entete():
         """Le logo s'il est la, le titre ecrit sinon."""
         logo = fichier_asset("logo.png")
         if logo:
-            barre = BoxLayout(size_hint_y=None, height=dp(46),
-                              padding=(0, dp(2)))
+            barre = BoxLayout(size_hint_y=None, height=dp(58),
+                              padding=(0, dp(3)))
             barre.add_widget(KivyImage(source=logo, allow_stretch=True,
                                        keep_ratio=True))
-            v = Label(text="v%s" % __version__, size_hint_x=None,
-                      width=dp(34), font_size=dp(10), color=TEXTE_2)
+            v = Label(text="[b]STUDIO RECORDER[/b]\n[size=9sp]v%s[/size]" % __version__,
+                      markup=True, size_hint_x=None, width=dp(112),
+                      halign="right", font_size=dp(10), color=TEXTE_2)
             barre.add_widget(v)
             return barre
         return Label(
@@ -1337,10 +1800,15 @@ class Root(BoxLayout):
 
     @mainthread
     def journal(self, txt):
-        lignes = self.log.text.split("\n")
-        if len(lignes) > 200:
-            self.log.text = "\n".join(lignes[-120:])
-        self.log.text += txt + "\n"
+        self._historique_log.append(str(txt))
+        if len(self._historique_log) > 200:
+            self._historique_log = self._historique_log[-120:]
+        # L'interface reste calme : seule la derniere information utile est
+        # visible. L'historique reste conserve en memoire pour le diagnostic.
+        self.log.text = str(txt)
+
+    def voir_journal(self):
+        HistoriquePopup(list(self._historique_log)).open()
 
     def afficher(self, i):
         arreter_lecture()
@@ -1348,7 +1816,7 @@ class Root(BoxLayout):
             self.ec_edit._arreter_tete()
         # En arrivant sur la bibliotheque on relit le disque : une prise
         # enregistree entre-temps doit apparaitre sans rien demander.
-        if self.ONGLETS[i] == "BIBLIO." and isinstance(self.ec_biblio,
+        if self.ONGLETS[i] == "SONS" and isinstance(self.ec_biblio,
                                                        EcranBiblio):
             self.ec_biblio.rafraichir()
         self.zone.clear_widgets()
