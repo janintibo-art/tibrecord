@@ -1,10 +1,13 @@
-# Patch 06 — depend de la v0.2.0
+# Patch 08 — depend de la v0.3.0
 
-Fichiers livres : main.py, noyau/__init__.py, tests/verificateur.py,
-tests/test_statique.py.
+Corrige l'acces aux fichiers du telephone. Ne touche PAS a
+l'enregistrement : le plantage du bouton REC n'est pas encore
+diagnostique, il faut la ligne d'erreur exacte.
 
-buildozer.spec et le workflow ne sont PAS dans ce zip.
-La seule modification de buildozer.spec est la ligne de version, faite
-par une commande a part (etape 2).
+Fichiers : main.py, noyau/stockage.py, noyau/__init__.py,
+tests/test_stockage.py.
 
-Tests attendus apres application : 92 (87 + 5 nouveaux).
+buildozer.spec n'est pas dans le zip : seule la ligne de version
+change, par une commande a part.
+
+Tests attendus : 112 (96 + 16 nouveaux).

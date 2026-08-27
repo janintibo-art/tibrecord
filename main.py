@@ -45,7 +45,8 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
-from noyau import __version__, audio, bibliotheque as bib, enregistrement
+from noyau import (__version__, audio, bibliotheque as bib,
+                   enregistrement, stockage)
 from noyau.temps import horloge_precise
 from onde import Onde, Regle, horloge, position_texte
 
@@ -456,6 +457,11 @@ class VuMetre(BoxLayout):
         self.crete = max(self.crete * 0.94, self.niveau)
         self._maj()
 
+    def vider(self):
+        self.niveau = 0.0
+        self.crete = 0.0
+        self._maj()
+
     def _maj(self, *_a):
         self._fond.pos, self._fond.size = self.pos, self.size
         espace = dp(2)
@@ -484,6 +490,142 @@ class VuMetre(BoxLayout):
         self._pic.pos = (max(self.x + marge, min(self.right - marge - dp(2), x - dp(1))),
                          self.y + dp(2))
         self._pic.size = (dp(2), max(dp(2), self.height - dp(4)))
+
+
+class Molette(Widget):
+    """Potentiometre tactile style rack.
+
+    Glisser verticalement sur la molette pour modifier la valeur. Le widget
+    ne depend d'aucune extension Kivy et reste donc leger pour Android.
+    """
+
+    def __init__(self, minimum=0.0, maximum=1.0, value=0.0,
+                 callback=None, **kw):
+        super().__init__(**kw)
+        self.minimum = float(minimum)
+        self.maximum = float(maximum)
+        self.value = float(value)
+        self.callback = callback
+        self._touch_y = None
+        self._touch_value = None
+        with self.canvas:
+            self._c_ombre = Color(0, 0, 0, 0.55)
+            self._ombre = Ellipse()
+            self._c_bague = Color(0.20, 0.23, 0.28, 1)
+            self._bague = Ellipse()
+            self._c_corps = Color(0.10, 0.11, 0.13, 1)
+            self._corps = Ellipse()
+            self._c_arc_fond = Color(0.24, 0.27, 0.32, 0.9)
+            self._arc_fond = Line(width=dp(2.2))
+            self._c_arc = Color(*CYAN)
+            self._arc = Line(width=dp(2.6))
+            self._c_trait = Color(0.92, 0.96, 1.0, 1)
+            self._trait = Line(width=dp(2.0))
+            self._c_reflet = Color(1, 1, 1, 0.08)
+            self._reflet = Ellipse()
+        self.bind(pos=self._maj, size=self._maj)
+        self._maj()
+
+    def poser(self, value, emettre=True):
+        self.value = max(self.minimum, min(self.maximum, float(value)))
+        self._maj()
+        if emettre and self.callback:
+            self.callback(self.value)
+
+    def fraction(self):
+        d = self.maximum - self.minimum
+        return 0.0 if d <= 0 else (self.value - self.minimum) / d
+
+    def _maj(self, *_a):
+        d = min(self.width, self.height) * 0.78
+        cx, cy = self.center
+        x, y = cx - d / 2.0, cy - d / 2.0
+        self._ombre.pos = (x, y - dp(2))
+        self._ombre.size = (d, d)
+        self._bague.pos = (x, y)
+        self._bague.size = (d, d)
+        m = d * 0.10
+        self._corps.pos = (x + m, y + m)
+        self._corps.size = (d - 2 * m, d - 2 * m)
+        self._reflet.pos = (x + d * 0.27, y + d * 0.56)
+        self._reflet.size = (d * 0.22, d * 0.13)
+
+        r = d * 0.47
+        # Course classique de potentiometre : minimum en bas a gauche,
+        # maximum en bas a droite, avec une zone morte sous la molette.
+        self._arc_fond.circle = (cx, cy, r, -45, 225)
+        angle = 225.0 - 270.0 * self.fraction()
+        self._arc.circle = (cx, cy, r, angle, 225)
+        a = math.radians(angle)
+        r0, r1 = d * 0.22, d * 0.39
+        self._trait.points = [cx + math.cos(a) * r0,
+                              cy + math.sin(a) * r0,
+                              cx + math.cos(a) * r1,
+                              cy + math.sin(a) * r1]
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            self._touch_y = touch.y
+            self._touch_value = self.value
+            touch.grab(self)
+            return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if touch.grab_current is self and self._touch_y is not None:
+            amplitude = max(dp(90), self.height * 1.7)
+            delta = (touch.y - self._touch_y) / float(amplitude)
+            self.poser(self._touch_value + delta * (self.maximum - self.minimum))
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            self._touch_y = None
+            self._touch_value = None
+            return True
+        return super().on_touch_up(touch)
+
+
+class Potard(BoxLayout):
+    """Molette + nom + valeur, dimensionnee pour tenir sur un telephone."""
+
+    def __init__(self, titre, minimum, maximum, value, unite="",
+                 decimals=1, callback=None, **kw):
+        super().__init__(orientation="vertical", spacing=0, **kw)
+        self.titre = titre
+        self.unite = unite
+        self.decimals = decimals
+        self.callback = callback
+        self.lbl_titre = Label(text="[b]%s[/b]" % titre.upper(), markup=True,
+                               size_hint_y=None, height=dp(17),
+                               font_size=dp(8.5), color=TEXTE_2)
+        self.add_widget(self.lbl_titre)
+        self.molette = Molette(minimum=minimum, maximum=maximum, value=value,
+                               callback=self._change)
+        self.add_widget(self.molette)
+        self.lbl_valeur = Label(size_hint_y=None, height=dp(18),
+                                font_size=dp(9), color=CYAN)
+        self.add_widget(self.lbl_valeur)
+        self._change(value, emettre=False)
+
+    @property
+    def value(self):
+        return self.molette.value
+
+    def poser(self, value, emettre=False):
+        self.molette.poser(value, emettre=emettre)
+        self._change(self.molette.value, emettre=emettre)
+
+    def _change(self, value, emettre=True):
+        if self.decimals <= 0:
+            txt = "%d" % int(round(value))
+        else:
+            txt = ("%%.%df" % self.decimals) % value
+        self.lbl_valeur.text = "%s%s" % (txt, self.unite)
+        if emettre and self.callback:
+            self.callback(value)
 
 
 class VoyantRec(Widget):
@@ -672,24 +814,64 @@ class AnalyseurSpectre(Widget):
 
 # --------------------------------------------------------------------------
 class Chooser(Popup):
-    def __init__(self, callback, dossiers=False, filtres=None, start=None, **kw):
+    """Selecteur de fichiers avec raccourcis.
+
+    Naviguer depuis /storage au doigt est intenable : la barre de
+    raccourcis en haut fait l'essentiel du travail. Les dossiers refuses
+    par Android y apparaissent en gris plutot que d'etre caches :
+    l'information est donnee AVANT l'echec, pas apres.
+    """
+
+    def __init__(self, callback, dossiers=False, filtres=None, start=None,
+                 journal=None, **kw):
         super().__init__(
             title="Choisir un dossier" if dossiers else "Choisir un fichier",
-            size_hint=(0.96, 0.92), **kw)
+            size_hint=(0.96, 0.94), **kw)
         self.callback, self.dossiers = callback, dossiers
+        self.journal = journal
         box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
+
+        # --- raccourcis, detectes et jamais codes en dur
+        barre = ScrollView(size_hint_y=None, height=dp(42),
+                           do_scroll_y=False)
+        rangee = BoxLayout(size_hint_x=None, spacing=dp(5), height=dp(38))
+        rangee.bind(minimum_width=rangee.setter("width"))
+        for nom, chemin, ok in stockage.raccourcis():
+            b = Bouton(text=nom, size_hint=(None, None),
+                       width=max(dp(84), dp(9) * len(nom)), height=dp(38),
+                       font_size=dp(10), rayon=7,
+                       couleur=GRIS if ok else (0.13, 0.13, 0.16, 1))
+            if not ok:
+                b.color = (0.45, 0.45, 0.50, 1)
+            b.bind(on_release=lambda w, c=chemin, o=ok: self._raccourci(c, o))
+            rangee.add_widget(b)
+        barre.add_widget(rangee)
+        box.add_widget(barre)
+
+        depart = start or dossier_sons()
+        if not stockage.lisible(depart):
+            depart = stockage.dossier_prive()
         self.chooser = FileChooserListView(
-            path=start or dossier_sons(), dirselect=dossiers,
-            filters=filtres or ["*"])
+            path=depart, dirselect=dossiers, filters=filtres or ["*"])
         box.add_widget(self.chooser)
+
+        # --- chemin tapable : dernier recours, mais debloque des
+        #     situations autrement sans issue
         self.champ = TextInput(text=self.chooser.path, multiline=False,
                                size_hint_y=None, height=dp(40))
         self.champ.bind(on_text_validate=lambda *_: self._aller(
             self.champ.text.strip()))
         box.add_widget(self.champ)
-        self.lbl = Label(text="", size_hint_y=None, height=dp(22),
-                         font_size=dp(11), color=(0.95, 0.55, 0.35, 1))
+
+        self.lbl = Label(text="", size_hint_y=None, height=dp(24),
+                         font_size=dp(11), color=(0.95, 0.55, 0.35, 1),
+                         shorten=True)
+        self.lbl.bind(size=lambda w, v: setattr(w, "text_size", v))
         box.add_widget(self.lbl)
+        if not stockage.acces_complet():
+            self.lbl.text = ("Acces limite : beaucoup de dossiers seront "
+                             "refuses. Bouton ACCES FICHIERS dans SONS.")
+
         r = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
         b_no = Bouton(text="Annuler")
         b_no.bind(on_release=lambda *_: self.dismiss())
@@ -700,11 +882,22 @@ class Chooser(Popup):
         box.add_widget(r)
         self.add_widget(box)
 
+    def _raccourci(self, chemin, ok):
+        if not ok:
+            self.lbl.text = "Android refuse ce dossier : %s" % chemin
+            return
+        self._aller(chemin)
+
     def _aller(self, chemin):
-        if os.path.isdir(chemin):
-            self.chooser.path = chemin
-        else:
-            self.lbl.text = "Dossier introuvable."
+        if not os.path.isdir(chemin):
+            self.lbl.text = "Dossier introuvable : %s" % chemin
+            return
+        if not stockage.lisible(chemin):
+            self.lbl.text = "Android refuse la lecture de %s" % chemin
+            return
+        self.chooser.path = chemin
+        self.champ.text = chemin
+        self.lbl.text = ""
 
     def _ok(self, *_):
         sel = self.chooser.selection
@@ -714,10 +907,11 @@ class Chooser(Popup):
             self.callback(os.path.dirname(c) if os.path.isfile(c) else c)
             return
         if not sel:
-            self.lbl.text = "Appuie d'abord sur un FICHIER."
+            self.lbl.text = "Appuie d'abord sur un FICHIER dans la liste."
             return
         if os.path.isdir(sel[0]):
             self.chooser.path = sel[0]
+            self.champ.text = sel[0]
             return
         self.dismiss()
         self.callback(sel[0])
@@ -1009,6 +1203,80 @@ class EcranEdit(BoxLayout):
         r_e.add_widget(b_st)
         corps.add_widget(r_e)
 
+        corps.add_widget(TitreSection(
+            "Rack Studio", "EQ, dynamique et saturation — glisser verticalement sur les molettes"))
+        rack = Panneau(orientation="vertical", size_hint_y=None,
+                       height=dp(500), padding=(dp(8), dp(7)), spacing=dp(5),
+                       fond=(0.045, 0.049, 0.059, 1), accent=AMBRE)
+
+        entete_rack = BoxLayout(size_hint_y=None, height=dp(25), spacing=dp(5))
+        entete_rack.add_widget(Label(
+            text="[b]TIBRECORD CHANNEL STRIP[/b]", markup=True,
+            halign="left", font_size=dp(9), color=TEXTE_2))
+        self.lbl_rack = Label(text="MANUEL", size_hint_x=None, width=dp(76),
+                              font_size=dp(8), color=AMBRE)
+        entete_rack.add_widget(self.lbl_rack)
+        rack.add_widget(entete_rack)
+
+        self.pots = {}
+        def pot(cle, titre, mini, maxi, valeur, unite=" dB", decimals=1):
+            p = Potard(titre, mini, maxi, valeur, unite=unite,
+                       decimals=decimals, size_hint_y=None, height=dp(104))
+            self.pots[cle] = p
+            return p
+
+        ligne1 = BoxLayout(size_hint_y=None, height=dp(104), spacing=dp(5))
+        ligne1.add_widget(pot("input", "Input", -18.0, 18.0, 0.0))
+        ligne1.add_widget(pot("low", "Low", -12.0, 12.0, 0.0))
+        ligne1.add_widget(pot("mid", "Mid", -12.0, 12.0, 0.0))
+        rack.add_widget(ligne1)
+
+        ligne2 = BoxLayout(size_hint_y=None, height=dp(104), spacing=dp(5))
+        ligne2.add_widget(pot("high", "High", -12.0, 12.0, 0.0))
+        ligne2.add_widget(pot("threshold", "Threshold", -40.0, -4.0, -18.0))
+        ligne2.add_widget(pot("ratio", "Ratio", 1.0, 10.0, 3.0,
+                              unite=":1", decimals=1))
+        rack.add_widget(ligne2)
+
+        ligne3 = BoxLayout(size_hint_y=None, height=dp(104), spacing=dp(5))
+        ligne3.add_widget(pot("drive", "Drive", 1.0, 4.0, 1.3,
+                              unite="x", decimals=2))
+        ligne3.add_widget(pot("mix", "Sat Mix", 0.0, 100.0, 25.0,
+                              unite="%", decimals=0))
+        ligne3.add_widget(pot("ceiling", "Output", -6.0, -0.1, -0.3))
+        rack.add_widget(ligne3)
+
+        meters = BoxLayout(orientation="vertical", size_hint_y=None,
+                           height=dp(64), spacing=dp(3))
+        m1 = BoxLayout(size_hint_y=None, height=dp(29), spacing=dp(6))
+        m1.add_widget(Label(text="IN", size_hint_x=None, width=dp(28),
+                            font_size=dp(8), color=TEXTE_2))
+        self.rack_in = VuMetre()
+        m1.add_widget(self.rack_in)
+        meters.add_widget(m1)
+        m2 = BoxLayout(size_hint_y=None, height=dp(29), spacing=dp(6))
+        m2.add_widget(Label(text="OUT", size_hint_x=None, width=dp(28),
+                            font_size=dp(8), color=TEXTE_2))
+        self.rack_out = VuMetre()
+        m2.add_widget(self.rack_out)
+        meters.add_widget(m2)
+        rack.add_widget(meters)
+
+        actions_rack = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(5))
+        b_reset = Bouton(text="RESET", size_hint_x=0.27, font_size=dp(9))
+        b_reset.bind(on_release=lambda *_: self.reset_rack())
+        actions_rack.add_widget(b_reset)
+        b_prev = Bouton(text="▶  APERCU", couleur=VERT, size_hint_x=0.33,
+                        font_size=dp(10))
+        b_prev.bind(on_release=lambda *_: self.apercu_rack())
+        actions_rack.add_widget(b_prev)
+        b_apply = Bouton(text="APPLIQUER RACK", couleur=CYAN,
+                         size_hint_x=0.40, font_size=dp(10))
+        b_apply.bind(on_release=lambda *_: self.appliquer_rack())
+        actions_rack.add_widget(b_apply)
+        rack.add_widget(actions_rack)
+        corps.add_widget(rack)
+
         corps.add_widget(TitreSection("Traitements rapides"))
         r_t = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         for txt, fn in (("Rogner", self.rogner),
@@ -1045,10 +1313,81 @@ class EcranEdit(BoxLayout):
         self.spectre.charger(sample)
         self.lbl_nom.text = nom or sample.name
         self._maj_mesures()
+        self._maj_rack_metres()
 
     def _maj_preset(self, *_a):
         cfg = audio.PRESETS.get(self.spin.text, {})
         self.lbl_preset.text = cfg.get("desc", "")
+
+    def _rack_cfg(self):
+        return {
+            "input_gain_db": self.pots["input"].value,
+            "low_db": self.pots["low"].value,
+            "mid_db": self.pots["mid"].value,
+            "high_db": self.pots["high"].value,
+            "comp_threshold_db": self.pots["threshold"].value,
+            "comp_ratio": self.pots["ratio"].value,
+            "sat_drive": self.pots["drive"].value,
+            "sat_mix": self.pots["mix"].value / 100.0,
+            "ceiling_db": self.pots["ceiling"].value,
+        }
+
+    def reset_rack(self):
+        valeurs = {
+            "input": 0.0, "low": 0.0, "mid": 0.0, "high": 0.0,
+            "threshold": -18.0, "ratio": 3.0,
+            "drive": 1.3, "mix": 25.0, "ceiling": -0.3,
+        }
+        for cle, valeur in valeurs.items():
+            self.pots[cle].poser(valeur)
+        self.lbl_rack.text = "MANUEL"
+        self._maj_rack_metres()
+        self.journal("Rack Studio remis a zero.")
+
+    def _maj_rack_metres(self, sortie=None):
+        if self.sample is None:
+            self.rack_in.vider()
+            self.rack_out.vider()
+            return
+        self.rack_in.vider()
+        self.rack_in.poser(self.sample.peak_db())
+        cible = sortie if sortie is not None else self.sample
+        self.rack_out.vider()
+        self.rack_out.poser(cible.peak_db())
+
+    def apercu_rack(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        try:
+            bout = self._selection()
+            test, rap = audio.studio_rack(bout, **self._rack_cfg())
+            jouer_sample(test, "rack_preview")
+            self._maj_rack_metres(test)
+            self.lbl_rack.text = "PREVIEW"
+            self.journal("Apercu rack : RMS %+.1f dB, crete %.1f dB" % (
+                rap["gain_db"], rap["apres"]["peak_db"]))
+        except Exception as e:  # noqa: BLE001
+            self.journal("Apercu rack impossible : %s" % e)
+
+    def appliquer_rack(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        try:
+            self._memoriser()
+            self.sample, rap = audio.studio_rack(self.sample, **self._rack_cfg())
+            self.onde.charger(self.sample)
+            self.spectre.charger(self.sample)
+            self._maj_mesures()
+            self._maj_rack_metres(self.sample)
+            self.lbl_rack.text = "APPLIQUE"
+            self.journal("Rack applique : RMS %+.1f dB, sortie %.1f dB" % (
+                rap["gain_db"], rap["apres"]["peak_db"]))
+        except Exception as e:  # noqa: BLE001
+            if self.historique:
+                self.sample = self.historique.pop()
+            self.journal("Rack impossible : %s" % e)
 
     def sauver(self):
         if self.sample is None:
@@ -1113,6 +1452,7 @@ class EcranEdit(BoxLayout):
         self.onde.charger(self.sample)
         self.spectre.charger(self.sample)
         self._maj_mesures()
+        self._maj_rack_metres()
         self.journal("Annule.")
 
     def rogner(self):
@@ -1126,6 +1466,7 @@ class EcranEdit(BoxLayout):
         self.onde.charger(self.sample)
         self.spectre.charger(self.sample)
         self._maj_mesures()
+        self._maj_rack_metres()
         self.journal("Rogne : %.0f ms conserves." % self.sample.duration_ms)
 
     def normaliser(self):
@@ -1135,6 +1476,7 @@ class EcranEdit(BoxLayout):
         audio.normalize_peak(self.sample, -0.3)
         self.onde.charger(self.sample)
         self.spectre.charger(self.sample)
+        self._maj_rack_metres()
         self.journal("Normalise a -0,3 dB.")
 
     def fondus(self):
@@ -1144,6 +1486,7 @@ class EcranEdit(BoxLayout):
         audio.fade(self.sample, 3.0, 8.0)
         self.onde.charger(self.sample)
         self.spectre.charger(self.sample)
+        self._maj_rack_metres()
         self.journal("Fondus appliques.")
 
     def traiter(self):
@@ -1154,6 +1497,7 @@ class EcranEdit(BoxLayout):
         self.onde.charger(self.sample)
         self.spectre.charger(self.sample)
         self._maj_mesures()
+        self._maj_rack_metres()
         self.journal("%s : %+.1f dB, RMS %.1f dB" % (
             self.spin.text, rap["gain_db"], rap["apres"]["rms_db"]))
 
@@ -1217,12 +1561,15 @@ class HistoriquePopup(Popup):
     a besoin.
     """
 
-    def __init__(self, lignes, **kw):
-        super().__init__(title="Journal", size_hint=(0.94, 0.8), **kw)
+    def __init__(self, lignes, titre="Journal", recent_en_haut=True, **kw):
+        super().__init__(title=titre, size_hint=(0.94, 0.85), **kw)
         box = BoxLayout(orientation="vertical", spacing=dp(8),
                         padding=dp(10))
         sv = ScrollView(do_scroll_x=False)
-        texte = "\n".join(reversed(lignes)) if lignes else "(rien encore)"
+        if not lignes:
+            texte = "(rien encore)"
+        else:
+            texte = "\n".join(reversed(lignes) if recent_en_haut else lignes)
         lbl = Label(text=texte, size_hint_y=None, halign="left",
                     valign="top", font_size=dp(11), color=TEXTE)
         lbl.bind(texture_size=lambda i, v: setattr(i, "height", v[1]),
@@ -1405,7 +1752,43 @@ class EcranBiblio(BoxLayout):
         r2.add_widget(b_sup)
         self.add_widget(r2)
 
+        # Acces au stockage : la permission "tous les fichiers" ne
+        # s'accorde que dans un ecran systeme dedie, jamais par une boite
+        # de dialogue ordinaire. Sans ce bouton elle reste declaree dans
+        # le manifeste mais jamais accordee, et les dossiers du telephone
+        # restent vides.
+        r3 = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        self.b_acces = Bouton(text="ACCES FICHIERS", font_size=dp(11),
+                              couleur=CYAN_S)
+        self.b_acces.bind(on_release=lambda *_: self.demander_acces())
+        r3.add_widget(self.b_acces)
+        b_diag = Bouton(text="DIAGNOSTIC", font_size=dp(11))
+        b_diag.bind(on_release=lambda *_: self.voir_diagnostic())
+        r3.add_widget(b_diag)
+        self.add_widget(r3)
+
         self.rafraichir()
+
+    # ------------------------------------------------------------ stockage
+    def demander_acces(self):
+        msg = stockage.demander_acces_complet()
+        self.journal(msg)
+        self.maj_bouton_acces()
+
+    def voir_diagnostic(self):
+        """Mesurer avant de corriger : sans ce releve, on essaie trois
+        hypotheses au hasard."""
+        HistoriquePopup(stockage.diagnostic().split("\n"),
+                        titre="Diagnostic du stockage",
+                        recent_en_haut=False).open()
+
+    def maj_bouton_acces(self):
+        if stockage.acces_complet():
+            self.b_acces.text = "ACCES FICHIERS OK"
+            self.b_acces.set_couleur(VERT)
+        else:
+            self.b_acces.text = "ACCES FICHIERS"
+            self.b_acces.set_couleur(CYAN_S)
 
     # ------------------------------------------------------------ chemins
     def racine(self):
@@ -1458,6 +1841,8 @@ class EcranBiblio(BoxLayout):
         for it in items:
             self.liste.add_widget(self._ligne(it))
 
+        if hasattr(self, "b_acces"):
+            self.maj_bouton_acces()
         duree = sum(i["duree_ms"] for i in items)
         vu = "%d son%s" % (len(items), "s" if len(items) > 1 else "")
         if len(items) != total:
@@ -1637,6 +2022,14 @@ EDITION
                bibliotheque, sans jamais ecraser un fichier
                existant : "kick" devient "kick 2".
 
+RACK STUDIO
+  Glisse verticalement sur les molettes. INPUT regle le niveau entrant,
+  LOW / MID / HIGH forment un EQ 3 bandes, THRESHOLD et RATIO pilotent
+  le compresseur, DRIVE et SAT MIX ajoutent de la saturation douce,
+  OUTPUT fixe le plafond du limiteur.
+  APERCU traite une copie de la selection et la joue sans toucher au son.
+  APPLIQUER RACK modifie le son et reste annulable avec ANNULER.
+
 SONS
   Tes prises rangees. Choisis un dossier en haut, cherche par nom,
   trie par date, nom, duree ou taille.
@@ -1645,6 +2038,18 @@ SONS
   + Dossier cree un rangement : kicks, voix, ambiances...
   Un dossier ne se supprime que s'il est vide : on ne perd pas dix
   prises d'un seul appui.
+
+ACCES AUX FICHIERS DU TELEPHONE
+  Depuis Android 11, une application ne lit plus librement le
+  telephone. Si des dossiers apparaissent vides ou refuses :
+  onglet SONS, bouton ACCES FICHIERS. Un ecran du systeme s'ouvre,
+  tu actives l'interrupteur, puis tu reviens dans Tibrecord.
+  Le bouton devient vert quand c'est accorde.
+  DIAGNOSTIC a cote liste ce qui est lisible et ce qui ne l'est pas :
+  a regarder avant de chercher plus loin.
+  Dans le selecteur de fichiers, les raccourcis du haut mènent
+  directement a Telechargements, Musique, Documents et carte SD. Ceux
+  qui sont gris sont refuses par Android.
 
 OU SONT LES FICHIERS
   Dans le sous-dossier enregistrements/ du dossier de l'application,
@@ -1843,10 +2248,35 @@ class TibrecordApp(App):
 
         if IS_ANDROID:
             Clock.schedule_once(lambda *_: self._permissions(), 0.5)
+            # L'ecran systeme d'acces complet arrive APRES les boites de
+            # dialogue ordinaires : les enchainer trop vite empile deux
+            # fenetres et l'utilisateur ne voit que la derniere.
+            Clock.schedule_once(lambda *_: self._acces_fichiers(), 2.5)
         try:
             return Root()
         except Exception as e:  # noqa: BLE001
             return EcranErreur(trace_complete(e), "DEMARRAGE")
+
+    @staticmethod
+    def _acces_fichiers():
+        """Propose l'acces complet une fois, au premier lancement.
+
+        On ne le redemande pas a chaque ouverture : un ecran de reglages
+        qui surgit sans raison est plus penible qu'utile. Le bouton
+        ACCES FICHIERS de l'onglet SONS reste disponible ensuite.
+        """
+        try:
+            if stockage.acces_complet():
+                return
+            temoin = os.path.join(stockage.dossier_prive(),
+                                  ".acces_demande")
+            if os.path.exists(temoin):
+                return
+            with open(temoin, "w", encoding="utf-8") as f:
+                f.write("demande une fois")
+            stockage.demander_acces_complet()
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _permissions():
