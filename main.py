@@ -46,7 +46,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
 from noyau import (__version__, audio, bibliotheque as bib,
-                   enregistrement, stockage)
+                   enregistrement, stockage, travail)
 from noyau.temps import horloge_precise
 from onde import Onde, Regle, horloge, position_texte
 
@@ -1073,7 +1073,7 @@ class EcranEnreg(BoxLayout):
             int(self.spin_taux.text), self.spin_source.text)
         if not self.enr.demarrer():
             return
-        self.b_rec.text = "[b]■  ARRETER[/b]\n[size=10sp]Enregistrement en cours[/size]"
+        self.b_rec.text = "[b]ARRETER[/b]\n[size=10sp]Enregistrement en cours[/size]"
         self.b_rec.set_couleur(ROUGE_SOMBRE)
         self.lbl_temps.color = (1.0, 0.42, 0.45, 1)
         self.lbl_etat.text = "REC  •  capture active"
@@ -1131,6 +1131,9 @@ class EcranEdit(BoxLayout):
         self.sample = None
         self.historique = []
         self._tic_tete = None
+        self._serie = travail.Serie()
+        self._pause_frac = None
+        self._seg = None
 
         page = ScrollView(do_scroll_x=False)
         corps = BoxLayout(orientation="vertical", spacing=dp(6),
@@ -1142,13 +1145,16 @@ class EcranEdit(BoxLayout):
         corps.add_widget(TitreSection(
             "Editeur audio", "Selection precise, lecture et traitements non destructifs"))
 
-        r_e = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        b_l = Bouton(text="▶  LIRE LA SELECTION", couleur=VERT)
-        b_l.bind(on_release=lambda *_: self.lire())
-        r_e.add_widget(b_l)
-        b_st = Bouton(text="■  STOP", size_hint_x=0.4)
-        b_st.bind(on_release=lambda *_: self.stopper())
-        r_e.add_widget(b_st)
+        r_e = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(5))
+        for txt, fn, coul, part in (
+                ("RETOUR", self.retour, GRIS, 0.72),
+                ("LIRE", self.lire, VERT, 1.0),
+                ("PAUSE", self.pauser, (0.72, 0.55, 0.13, 1), 0.86),
+                ("STOP", self.stopper, GRIS, 0.72)):
+            b = Bouton(text=txt, couleur=coul, font_size=dp(12),
+                       size_hint_x=part)
+            b.bind(on_release=lambda w, f=fn: f())
+            r_e.add_widget(b)
         corps.add_widget(r_e)
 
         self.lbl_nom = Label(text="(aucun son)", size_hint_y=None,
@@ -1276,7 +1282,7 @@ class EcranEdit(BoxLayout):
         b_reset = Bouton(text="RESET", size_hint_x=0.27, font_size=dp(9))
         b_reset.bind(on_release=lambda *_: self.reset_rack())
         actions_rack.add_widget(b_reset)
-        b_prev = Bouton(text="▶  APERCU", couleur=VERT, size_hint_x=0.33,
+        b_prev = Bouton(text="APERCU", couleur=VERT, size_hint_x=0.33,
                         font_size=dp(10))
         b_prev.bind(on_release=lambda *_: self.apercu_rack())
         actions_rack.add_widget(b_prev)
@@ -1319,11 +1325,45 @@ class EcranEdit(BoxLayout):
     def poser(self, sample, nom=None):
         self.sample = sample
         self.historique = []
+        self._pause_frac = None
+        self._seg = None
         self.onde.charger(sample)
         self.spectre.charger(sample)
         self.lbl_nom.text = nom or sample.name
         self._maj_mesures()
         self._maj_rack_metres()
+
+    # -------------------------------------------------- tache de fond
+    def _en_fond(self, titre, calcul, apres):
+        """Execute un calcul long sans figer l'ecran.
+
+        Le calcul recoit une COPIE du son et travaille dans son fil ;
+        `apres(resultat)` revient sur le fil d'interface pour poser le
+        resultat. Pendant ce temps, une fenetre de patience bloque les
+        appuis : deux traitements simultanes sur le meme son donneraient
+        un resultat dependant de l'ordre d'arrivee.
+        """
+        if self._serie.occupe:
+            self.journal("Un traitement est deja en cours.")
+            return
+        popup = PatiencePopup(titre)
+
+        def succes(resultat):
+            popup.fermer()
+            try:
+                apres(resultat)
+            except Exception as e:  # noqa: BLE001
+                self.journal("Echec apres traitement : %s" % e)
+
+        def echec(e):
+            popup.fermer()
+            self.journal("%s impossible : %s" % (titre, e))
+
+        parti = self._serie.lancer(
+            calcul, succes, echec,
+            lambda fn: Clock.schedule_once(fn, 0))
+        if parti:
+            popup.open()
 
     def _maj_preset(self, *_a):
         cfg = audio.PRESETS.get(self.spin.text, {})
@@ -1369,24 +1409,36 @@ class EcranEdit(BoxLayout):
         if self.sample is None:
             self.journal("Ouvre ou enregistre un son d'abord.")
             return
-        try:
-            bout = self._selection()
-            test, rap = audio.studio_rack(bout, **self._rack_cfg())
+        bout = self._selection()
+        cfg = self._rack_cfg()
+
+        def calcul():
+            return audio.studio_rack(bout, **cfg)
+
+        def apres(resultat):
+            test, rap = resultat
             jouer_sample(test, "rack_preview")
             self._maj_rack_metres(test)
             self.lbl_rack.text = "PREVIEW"
             self.journal("Apercu rack : RMS %+.1f dB, crete %.1f dB" % (
                 rap["gain_db"], rap["apres"]["peak_db"]))
-        except Exception as e:  # noqa: BLE001
-            self.journal("Apercu rack impossible : %s" % e)
+
+        self._en_fond("Apercu du rack", calcul, apres)
 
     def appliquer_rack(self):
         if self.sample is None:
             self.journal("Ouvre ou enregistre un son d'abord.")
             return
-        try:
+        copie = self.sample.copy()
+        cfg = self._rack_cfg()
+
+        def calcul():
+            return audio.studio_rack(copie, **cfg)
+
+        def apres(resultat):
+            traite, rap = resultat
             self._memoriser()
-            self.sample, rap = audio.studio_rack(self.sample, **self._rack_cfg())
+            self.sample = traite
             self.onde.charger(self.sample)
             self.spectre.charger(self.sample)
             self._maj_mesures()
@@ -1394,10 +1446,8 @@ class EcranEdit(BoxLayout):
             self.lbl_rack.text = "APPLIQUE"
             self.journal("Rack applique : RMS %+.1f dB, sortie %.1f dB" % (
                 rap["gain_db"], rap["apres"]["peak_db"]))
-        except Exception as e:  # noqa: BLE001
-            if self.historique:
-                self.sample = self.historique.pop()
-            self.journal("Rack impossible : %s" % e)
+
+        self._en_fond("Rack Studio", calcul, apres)
 
     def sauver(self):
         if self.sample is None:
@@ -1453,6 +1503,10 @@ class EcranEdit(BoxLayout):
             self.historique.append(self.sample.copy())
             if len(self.historique) > 12:
                 self.historique.pop(0)
+        # Le son va changer : un point de pause note sur l'ancien son
+        # tomberait n'importe ou dans le nouveau.
+        self._pause_frac = None
+        self._seg = None
 
     def annuler(self):
         if not self.historique:
@@ -1512,18 +1566,68 @@ class EcranEdit(BoxLayout):
             self.spin.text, rap["gain_db"], rap["apres"]["rms_db"]))
 
     def lire(self):
+        """Joue depuis le point de pause s'il y en a un, sinon depuis le
+        debut de la selection. Toujours jusqu'a la fin de la selection."""
         if self.sample is None:
             self.journal("Ouvre ou enregistre un son d'abord.")
             return
         try:
-            a, b = self.onde.bornes_ms()
+            a = self.onde.sel_debut
+            b = self.onde.sel_fin
+            depart = a
+            if self._pause_frac is not None and \
+                    a <= self._pause_frac < b - 1e-6:
+                depart = self._pause_frac
+            self._pause_frac = None
             r = self.sample.rate
-            i0, i1 = int(a * r / 1000), int(b * r / 1000)
+            n = len(self.sample.data)
+            i0, i1 = int(depart * n), int(b * n)
             bout = audio.Sample(self.sample.data[i0:i1], r, "selection")
             jouer_sample(bout, "selection")
+            # Kivy ne sait ni mettre en pause ni donner la position :
+            # on retient donc NOUS quel segment est en train de jouer,
+            # et la pause devient un arret dont on note l'endroit.
+            self._seg = (depart, b)
             self._suivre_tete()
         except Exception as e:  # noqa: BLE001
             self.journal("Lecture impossible : %s" % e)
+
+    def pauser(self):
+        """Arrete la lecture en retenant ou elle en etait.
+
+        Le prochain LIRE repartira de ce point exact. La tete reste
+        affichee sur l'onde : c'est elle qui dit "je suis en pause ici",
+        sans quoi pause et stop seraient indiscernables a l'ecran.
+        """
+        f = avancement_lecture()
+        if f is None or self._seg is None:
+            return
+        a, b = self._seg
+        pos = a + (b - a) * f
+        arreter_lecture()
+        if self._tic_tete is not None:
+            self._tic_tete.cancel()
+            self._tic_tete = None
+        self._seg = None
+        self._pause_frac = pos
+        self.onde.poser_tete(pos)
+        if self.sample is not None:
+            duree = self.sample.duration_ms
+            n = len(self.sample.data)
+            self.compteur.afficher(pos * duree, duree, int(pos * n), n)
+        self.journal("Pause.")
+
+    def retour(self):
+        """Revient au debut de la selection. Si ca jouait, ca rejoue."""
+        jouait = avancement_lecture() is not None
+        arreter_lecture()
+        self._pause_frac = None
+        self._seg = None
+        if jouait:
+            self.lire()
+        else:
+            self._arreter_tete()
+            self.onde.poser_tete(self.onde.sel_debut)
 
     # ------------------------------------------------------- tete de lecture
     def _suivre_tete(self):
@@ -1532,7 +1636,8 @@ class EcranEdit(BoxLayout):
         Trente images par seconde : en dessous, les millisecondes
         avancent par paquets et l'oeil le voit.
         """
-        self._arreter_tete()
+        if self._tic_tete is not None:
+            self._tic_tete.cancel()
         self._tic_tete = Clock.schedule_interval(self._maj_tete, 1 / 30.0)
 
     def _arreter_tete(self):
@@ -1545,11 +1650,11 @@ class EcranEdit(BoxLayout):
     def _maj_tete(self, *_a):
         f = avancement_lecture()
         if f is None:
+            self._seg = None
             self._arreter_tete()
             return False
-        # La lecture porte sur la selection : la tete parcourt donc la
-        # selection, pas le son entier.
-        a, b = self.onde.sel_debut, self.onde.sel_fin
+        a, b = self._seg if self._seg else (self.onde.sel_debut,
+                                            self.onde.sel_fin)
         pos = a + (b - a) * f
         self.onde.poser_tete(pos)
         if self.sample is not None:
@@ -1560,7 +1665,43 @@ class EcranEdit(BoxLayout):
 
     def stopper(self):
         arreter_lecture()
+        self._pause_frac = None
+        self._seg = None
         self._arreter_tete()
+
+class PatiencePopup(Popup):
+    """Fenetre affichee pendant un traitement en tache de fond.
+
+    Elle ne se ferme pas d'un appui exterieur : le calcul en cours ne
+    peut pas etre interrompu proprement, autant ne pas faire semblant.
+    Le temps ecoule qui defile sert de preuve de vie : un ecran fige et
+    un ecran qui attend se ressemblent, sauf par ce compteur.
+    """
+
+    def __init__(self, titre, **kw):
+        super().__init__(title=titre, size_hint=(0.82, None),
+                         height=dp(150), auto_dismiss=False, **kw)
+        box = BoxLayout(orientation="vertical", spacing=dp(6),
+                        padding=dp(12))
+        self.lbl = Label(text="Traitement...", font_size=dp(13),
+                         color=TEXTE)
+        box.add_widget(self.lbl)
+        self.lbl_temps = Label(text="0.0 s", font_size=dp(19), bold=True,
+                               color=CYAN)
+        box.add_widget(self.lbl_temps)
+        self.add_widget(box)
+        self._depart = time.time()
+        self._tic = Clock.schedule_interval(self._maj, 1 / 5.0)
+
+    def _maj(self, *_a):
+        self.lbl_temps.text = "%.1f s" % (time.time() - self._depart)
+
+    def fermer(self):
+        if self._tic is not None:
+            self._tic.cancel()
+            self._tic = None
+        self.dismiss()
+
 
 class HistoriquePopup(Popup):
     """Toutes les lignes du journal, la plus recente en haut.
@@ -2023,9 +2164,21 @@ EDITION
   d'echantillon. L'analyseur 18 bandes donne une vue rapide du contenu
   grave / medium / aigu du son.
 
-  LIRE LA SELECTION et STOP sont en haut, sous le compteur : ils
-  servent a chaque reglage de decoupe. OUVRIR WAV et SAUVEGARDER sont
-  plus bas, sous le titre Fichier : ils ne servent qu'une fois.
+  Le transport est en haut, sous le compteur :
+  RETOUR  revient au debut de la selection. Si ca jouait, ca rejoue.
+  LIRE    joue la selection. Apres une pause, reprend ou c'etait.
+  PAUSE   arrete en retenant l'endroit exact. La tete reste posee
+          sur l'onde pour le montrer.
+  STOP    arrete et oublie tout.
+  OUVRIR WAV et SAUVEGARDER sont plus bas, sous le titre Fichier :
+  ils ne servent qu'une fois par session.
+
+LES TRAITEMENTS LONGS
+  Les presets et le rack tournent en arriere-plan : une fenetre de
+  patience s'affiche avec le temps qui defile, puis le resultat se
+  pose. L'application ne se fige plus, meme sur une longue prise.
+  Un seul traitement a la fois : le deuxieme appui est refuse tant
+  que le premier n'est pas fini.
 
   Rogner       reduit le son a la selection
   Normaliser   amene la crete a -0,3 dB

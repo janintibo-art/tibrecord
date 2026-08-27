@@ -1,14 +1,20 @@
-# Patch 11 — a poser par-dessus les patchs 09 et 10
+# Patch 12 — a poser par-dessus le patch 11
 
-Deux modifications demandees :
+Version 0.4.0 : le studio mobile, etapes 1 et 2.
 
-1. Carte SD dans le selecteur de fichiers.
-   Detection renforcee (Android + /storage), bouton place en deuxieme
-   position pour etre visible sans faire defiler, et toujours affiche
-   meme si aucune carte n'est presente.
+1. TRAITEMENTS EN ARRIERE-PLAN
+   Presets et rack tournent dans un fil separe, avec une fenetre de
+   patience et le temps qui defile. L'application ne se fige plus,
+   Android ne la tue plus sur les longues prises.
+   Un seul traitement a la fois : le deuxieme appui est refuse.
 
-2. Ecran EDITION : LIRE LA SELECTION / STOP passent en haut, sous le
-   compteur. OUVRIR WAV / SAUVEGARDER descendent, sous un nouveau
-   titre "Fichier".
+2. TRANSPORT COMPLET dans EDITION
+   RETOUR / LIRE / PAUSE / STOP sous le compteur.
+   PAUSE retient la position exacte, LIRE reprend de la.
+   Les carres vides devant LIRE et STOP (glyphes absents de la
+   police Android) sont remplaces par du texte.
 
-Version 0.3.3. Tests attendus : 118.
+Fichiers : main.py, noyau/travail.py, noyau/__init__.py,
+tests/test_travail.py.
+
+Tests attendus : 124.
