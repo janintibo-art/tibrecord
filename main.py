@@ -883,10 +883,14 @@ class Chooser(Popup):
         self.add_widget(box)
 
     def _raccourci(self, chemin, ok):
-        if not ok:
-            self.lbl.text = "Android refuse ce dossier : %s" % chemin
+        if ok:
+            self._aller(chemin)
             return
-        self._aller(chemin)
+        if chemin.startswith("("):
+            self.lbl.text = ("Aucune carte SD detectee sur cet appareil. "
+                             "DIAGNOSTIC dans SONS pour en savoir plus.")
+        else:
+            self.lbl.text = "Android refuse ce dossier : %s" % chemin
 
     def _aller(self, chemin):
         if not os.path.isdir(chemin):
@@ -1138,15 +1142,14 @@ class EcranEdit(BoxLayout):
         corps.add_widget(TitreSection(
             "Editeur audio", "Selection precise, lecture et traitements non destructifs"))
 
-        r0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        b_o = Bouton(text="OUVRIR WAV", couleur=CYAN)
-        b_o.bind(on_release=lambda *_: Chooser(
-            self.charger_fichier, filtres=["*.wav", "*.WAV"]).open())
-        r0.add_widget(b_o)
-        b_s = Bouton(text="SAUVEGARDER", couleur=VERT)
-        b_s.bind(on_release=lambda *_: self.sauver())
-        r0.add_widget(b_s)
-        corps.add_widget(r0)
+        r_e = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        b_l = Bouton(text="▶  LIRE LA SELECTION", couleur=VERT)
+        b_l.bind(on_release=lambda *_: self.lire())
+        r_e.add_widget(b_l)
+        b_st = Bouton(text="■  STOP", size_hint_x=0.4)
+        b_st.bind(on_release=lambda *_: self.stopper())
+        r_e.add_widget(b_st)
+        corps.add_widget(r_e)
 
         self.lbl_nom = Label(text="(aucun son)", size_hint_y=None,
                              height=dp(24), font_size=dp(12), shorten=True,
@@ -1198,14 +1201,17 @@ class EcranEdit(BoxLayout):
             r_z.add_widget(b)
         corps.add_widget(r_z)
 
-        r_e = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        b_l = Bouton(text="▶  LIRE LA SELECTION", couleur=VERT)
-        b_l.bind(on_release=lambda *_: self.lire())
-        r_e.add_widget(b_l)
-        b_st = Bouton(text="■  STOP", size_hint_x=0.4)
-        b_st.bind(on_release=lambda *_: self.stopper())
-        r_e.add_widget(b_st)
-        corps.add_widget(r_e)
+        corps.add_widget(TitreSection(
+            "Fichier", "Ouvrir un WAV du telephone, ecrire dans SONS"))
+        r0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        b_o = Bouton(text="OUVRIR WAV", couleur=CYAN)
+        b_o.bind(on_release=lambda *_: Chooser(
+            self.charger_fichier, filtres=["*.wav", "*.WAV"]).open())
+        r0.add_widget(b_o)
+        b_s = Bouton(text="SAUVEGARDER", couleur=VERT)
+        b_s.bind(on_release=lambda *_: self.sauver())
+        r0.add_widget(b_s)
+        corps.add_widget(r0)
 
         corps.add_widget(TitreSection(
             "Rack Studio", "EQ, dynamique et saturation — glisser verticalement sur les molettes"))
@@ -2017,6 +2023,10 @@ EDITION
   d'echantillon. L'analyseur 18 bandes donne une vue rapide du contenu
   grave / medium / aigu du son.
 
+  LIRE LA SELECTION et STOP sont en haut, sous le compteur : ils
+  servent a chaque reglage de decoupe. OUVRIR WAV et SAUVEGARDER sont
+  plus bas, sous le titre Fichier : ils ne servent qu'une fois.
+
   Rogner       reduit le son a la selection
   Normaliser   amene la crete a -0,3 dB
   Fondus       evite les clics au debut et a la fin
@@ -2052,8 +2062,20 @@ ACCES AUX FICHIERS DU TELEPHONE
   DIAGNOSTIC a cote liste ce qui est lisible et ce qui ne l'est pas :
   a regarder avant de chercher plus loin.
   Dans le selecteur de fichiers, les raccourcis du haut mènent
-  directement a Telechargements, Musique, Documents et carte SD. Ceux
-  qui sont gris sont refuses par Android.
+  directement a Mes sons, Carte SD, Telechargements, Musique,
+  Documents et Stockage interne. Ceux qui sont gris sont refuses par
+  Android, ou absents de l'appareil.
+
+CARTE SD
+  Deux boutons peuvent apparaitre.
+  Carte SD        la racine de la carte. Souvent fermee par Android,
+                  meme avec l'acces a tous les fichiers accorde.
+  Carte SD (app)  le dossier reserve a Tibrecord sur la carte. Celui-la
+                  est lisible ET inscriptible sans aucune permission,
+                  quelle que soit la version d'Android. C'est la voie
+                  fiable pour travailler depuis une carte.
+  Si aucune carte n'est detectee, le bouton reste affiche en gris :
+  c'est l'appareil qui n'en a pas, pas l'application qui ignore.
 
 OU SONT LES FICHIERS
   Dans le sous-dossier enregistrements/ du dossier de l'application,

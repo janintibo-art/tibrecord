@@ -66,9 +66,56 @@ def inscriptible(chemin):
         return False
 
 
-def cartes_sd():
-    """Volumes amovibles montes, du type /storage/XXXX-XXXX."""
+def _cartes_par_android():
+    """Demande a Android ou sont ses volumes externes.
+
+    getExternalFilesDirs renvoie un dossier par volume monte : le premier
+    est la memoire interne, les suivants sont les cartes. Le chemin
+    ressemble a /storage/XXXX-XXXX/Android/data/<paquet>/files.
+
+    C'est la voie la plus fiable, et elle a un avantage decisif : ce
+    dossier-la est accessible en lecture ET en ecriture SANS aucune
+    permission, meme quand la racine de la carte est fermee.
+    """
     out = []
+    if not IS_ANDROID:
+        return out
+    try:
+        from jnius import autoclass
+        activite = autoclass("org.kivy.android.PythonActivity").mActivity
+        for i, d in enumerate(activite.getExternalFilesDirs(None)):
+            if d is None or i == 0:
+                continue
+            prive = d.getAbsolutePath()
+            out.append(("Carte SD (app)", prive))
+            # On remonte a la racine du volume : parfois lisible, parfois
+            # non. On la propose, quitte a ce qu'elle soit grisee.
+            marque = os.sep + "Android" + os.sep
+            if marque in prive:
+                racine = prive.split(marque)[0]
+                if racine:
+                    out.append(("Carte SD", racine))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def cartes_sd():
+    """Volumes amovibles, par les deux voies possibles.
+
+    On croise ce qu'Android declare et ce qu'on voit dans /storage :
+    selon le constructeur, l'une des deux echoue.
+    """
+    out = []
+    vus = set()
+
+    def ajouter(nom, chemin):
+        if chemin and chemin not in vus and os.path.isdir(chemin):
+            vus.add(chemin)
+            out.append((nom, chemin))
+
+    for nom, chemin in _cartes_par_android():
+        ajouter(nom, chemin)
     for base in ("/storage", "/mnt/media_rw"):
         try:
             noms = sorted(os.listdir(base))
@@ -77,9 +124,7 @@ def cartes_sd():
         for n in noms:
             if n in PAS_DES_CARTES or n.startswith("."):
                 continue
-            chemin = os.path.join(base, n)
-            if os.path.isdir(chemin) and chemin not in [c for _, c in out]:
-                out.append(("Carte SD", chemin))
+            ajouter("Carte SD", os.path.join(base, n))
     return out
 
 
@@ -101,6 +146,19 @@ def raccourcis():
             out.append((nom, chemin, lisible(chemin)))
 
     ajouter("Mes sons", os.path.join(dossier_prive(), "enregistrements"))
+
+    # La carte SD vient tout de suite apres : la barre defile
+    # horizontalement, et ce qui est en dernier n'est jamais vu.
+    cartes = cartes_sd()
+    for nom, chemin in cartes:
+        ajouter(nom, chemin)
+    if not cartes:
+        # Aucune carte trouvee : on garde quand meme le bouton, grise.
+        # Le faire disparaitre laisserait croire que l'application ne
+        # sait pas les gerer, alors que c'est le telephone qui n'en a
+        # pas, ou qui la refuse.
+        out.append(("Carte SD", "(aucune detectee)", False))
+
     if IS_ANDROID:
         for nom, sous in (("Telechargements", "Download"),
                           ("Musique", "Music"),
@@ -115,8 +173,6 @@ def raccourcis():
                           ("Documents", "Documents")):
             ajouter(nom, os.path.join(maison, sous))
         ajouter("Dossier personnel", maison)
-    for nom, chemin in cartes_sd():
-        ajouter(nom, chemin)
     return out
 
 

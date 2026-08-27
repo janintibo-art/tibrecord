@@ -57,9 +57,23 @@ class TestRaccourcis(unittest.TestCase):
         chemins = [c for _, c, _ in st.raccourcis()]
         self.assertEqual(len(chemins), len(set(chemins)))
 
-    def test_les_chemins_existent(self):
-        for _, chemin, _ in st.raccourcis():
-            self.assertTrue(os.path.isdir(chemin), chemin)
+    def test_les_chemins_annonces_lisibles_existent(self):
+        """Un raccourci marque lisible doit vraiment mener quelque part.
+        Ceux marques non lisibles peuvent etre des reperes : la carte SD
+        reste affichee meme absente, pour dire qu'on sait la gerer."""
+        for _, chemin, ok in st.raccourcis():
+            if ok:
+                self.assertTrue(os.path.isdir(chemin), chemin)
+
+    def test_la_carte_sd_est_toujours_proposee(self):
+        noms = [n for n, _, _ in st.raccourcis()]
+        self.assertTrue(any("Carte SD" in n for n in noms),
+                        "la carte SD doit rester visible, meme absente")
+
+    def test_carte_absente_est_marquee_non_lisible(self):
+        for nom, chemin, ok in st.raccourcis():
+            if chemin.startswith("("):
+                self.assertFalse(ok, "%s annonce lisible a tort" % nom)
 
 
 class TestCartes(unittest.TestCase):
