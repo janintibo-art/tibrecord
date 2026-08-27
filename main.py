@@ -46,7 +46,8 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
 from noyau import (__version__, audio, bibliotheque as bib,
-                   enregistrement, stockage, travail, vignettes)
+                   enregistrement, spectre as noyau_spectre, stockage,
+                   travail, vignettes)
 from noyau.temps import horloge_precise
 from onde import Onde, Regle, horloge, position_texte
 
@@ -731,53 +732,26 @@ class ScopeTempsReel(Widget):
 
 
 class AnalyseurSpectre(Widget):
-    """Analyseur spectral leger, sans numpy, base sur des bandes Goertzel."""
+    """Analyseur 18 bandes. Le calcul vit dans noyau/spectre.py.
 
-    NB = 18
+    Deux entrees : charger(sample) pour la vue figee du son entier, et
+    poser_niveaux(valeurs) pour la vue animee qui suit la lecture. Le
+    dessin est le meme, seule la source des barres change.
+    """
+
+    NB = noyau_spectre.NB_BANDES
 
     def __init__(self, **kw):
         super().__init__(**kw)
         self.valeurs = [0.0] * self.NB
         self.bind(pos=self.redessiner, size=self.redessiner)
 
-    @staticmethod
-    def _goertzel(data, rate, freq):
-        if not data or rate <= 0:
-            return 0.0
-        n = len(data)
-        k = int(0.5 + n * freq / float(rate))
-        omega = 2.0 * math.pi * k / float(n)
-        coeff = 2.0 * math.cos(omega)
-        q0 = q1 = q2 = 0.0
-        for x in data:
-            q0 = x + coeff * q1 - q2
-            q2, q1 = q1, q0
-        p = q1 * q1 + q2 * q2 - coeff * q1 * q2
-        return max(p, 1e-20)
-
     def charger(self, sample):
-        if sample is None or not sample.data or not sample.rate:
-            self.valeurs = [0.0] * self.NB
-            self.redessiner()
-            return
-        n = min(3072, len(sample.data))
-        centre = len(sample.data) // 2
-        debut = max(0, centre - n // 2)
-        bloc = list(sample.data[debut:debut + n])
-        if len(bloc) > 8:
-            den = max(1, len(bloc) - 1)
-            for i in range(len(bloc)):
-                bloc[i] *= 0.5 - 0.5 * math.cos(2.0 * math.pi * i / den)
-        f0, f1 = 55.0, min(16000.0, sample.rate * 0.44)
-        freqs = [f0 * ((f1 / f0) ** (i / float(self.NB - 1)))
-                 for i in range(self.NB)]
-        puissances = [self._goertzel(bloc, sample.rate, f) for f in freqs]
-        mx = max(puissances) if puissances else 1.0
-        vals = []
-        for p in puissances:
-            db = 10.0 * math.log10(max(p / mx, 1e-12))
-            vals.append(max(0.0, min(1.0, (db + 52.0) / 52.0)))
-        self.valeurs = vals
+        self.valeurs = noyau_spectre.bandes_du_sample(sample, self.NB)
+        self.redessiner()
+
+    def poser_niveaux(self, valeurs):
+        self.valeurs = list(valeurs)
         self.redessiner()
 
     def redessiner(self, *_a):
@@ -1134,6 +1108,8 @@ class EcranEdit(BoxLayout):
         self._serie = travail.Serie()
         self._pause_frac = None
         self._seg = None
+        self._tic_spectre = None
+        self._spectre_vif = []
 
         page = ScrollView(do_scroll_x=False)
         corps = BoxLayout(orientation="vertical", spacing=dp(6),
@@ -1589,6 +1565,7 @@ class EcranEdit(BoxLayout):
             # et la pause devient un arret dont on note l'endroit.
             self._seg = (depart, b)
             self._suivre_tete()
+            self._suivre_spectre()
         except Exception as e:  # noqa: BLE001
             self.journal("Lecture impossible : %s" % e)
 
@@ -1610,6 +1587,7 @@ class EcranEdit(BoxLayout):
             self._tic_tete = None
         self._seg = None
         self._pause_frac = pos
+        self._arreter_spectre()
         self.onde.poser_tete(pos)
         if self.sample is not None:
             duree = self.sample.duration_ms
@@ -1628,6 +1606,43 @@ class EcranEdit(BoxLayout):
         else:
             self._arreter_tete()
             self.onde.poser_tete(self.onde.sel_debut)
+
+    # ------------------------------------------------------------ spectre vif
+    def _suivre_spectre(self):
+        """Anime le spectre pendant la lecture, a douze images par
+        seconde.
+
+        Pas plus : chaque image coute une analyse Goertzel, mesuree a
+        moins d'une milliseconde ici donc autour de cinq sur telephone.
+        A douze images le mouvement est net et le budget est large ; a
+        trente il ne resterait rien pour le reste de l'ecran.
+        """
+        self._arreter_spectre()
+        self._spectre_vif = []
+        self._tic_spectre = Clock.schedule_interval(self._maj_spectre,
+                                                    1 / 12.0)
+
+    def _arreter_spectre(self):
+        if self._tic_spectre is not None:
+            self._tic_spectre.cancel()
+            self._tic_spectre = None
+
+    def _maj_spectre(self, *_a):
+        f = avancement_lecture()
+        if f is None or self.sample is None:
+            # Fin de lecture : on revient a la vue figee du son entier,
+            # pour ne pas laisser a l'ecran le spectre du dernier
+            # centieme de seconde.
+            self._arreter_spectre()
+            self.spectre.charger(self.sample)
+            return False
+        a, b = self._seg if self._seg else (self.onde.sel_debut,
+                                            self.onde.sel_fin)
+        pos = a + (b - a) * f
+        vals = noyau_spectre.bandes_a_la_position(self.sample, pos,
+                                                  self.spectre.NB)
+        self._spectre_vif = noyau_spectre.lisser(self._spectre_vif, vals)
+        self.spectre.poser_niveaux(self._spectre_vif)
 
     # ------------------------------------------------------- tete de lecture
     def _suivre_tete(self):
@@ -1667,7 +1682,10 @@ class EcranEdit(BoxLayout):
         arreter_lecture()
         self._pause_frac = None
         self._seg = None
+        self._arreter_spectre()
         self._arreter_tete()
+        if self.sample is not None:
+            self.spectre.charger(self.sample)
 
 class PatiencePopup(Popup):
     """Fenetre affichee pendant un traitement en tache de fond.
@@ -2226,8 +2244,11 @@ EDITION
   de la coupe. Pendant la lecture il passe au jaune et defile, en
   meme temps que la barre sur l'onde.
   Le compteur du bas affiche la selection entiere et les numeros
-  d'echantillon. L'analyseur 18 bandes donne une vue rapide du contenu
-  grave / medium / aigu du son.
+  d'echantillon.
+  L'analyseur 18 bandes montre le contenu grave / medium / aigu.
+  A l'arret il resume le son entier ; pendant la lecture il DANSE :
+  il suit ce qui joue, douze images par seconde, avec des barres qui
+  montent d'un coup et retombent doucement, comme un vrai vu-metre.
 
   Le transport est en haut, sous le compteur :
   RETOUR  revient au debut de la selection. Si ca jouait, ca rejoue.
@@ -2469,6 +2490,7 @@ class Root(BoxLayout):
     def afficher(self, i):
         arreter_lecture()
         if isinstance(self.ec_edit, EcranEdit):
+            self.ec_edit._arreter_spectre()
             self.ec_edit._arreter_tete()
         # En arrivant sur la bibliotheque on relit le disque : une prise
         # enregistree entre-temps doit apparaitre sans rien demander.

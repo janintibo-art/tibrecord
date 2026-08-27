@@ -1,19 +1,18 @@
-# Patch 13 — a poser par-dessus le patch 12
+# Patch 14 — a poser par-dessus le patch 13
 
-Version 0.5.0 : mini-formes d'onde dans la bibliotheque (etape 3).
+Version 0.6.0 : le spectre anime pendant la lecture (etape 4).
 
-- Chaque ligne de SONS montre la silhouette du son, calculee par
-  lecture decimee (6 ms au lieu de 2 s sur un WAV de 3 minutes).
-- Cache .vignettes.json par dossier : rien n'est recalcule tant que
-  le fichier n'a pas change. La cle est le nom du fichier : le cache
-  survit au renommage du dossier.
-- Le calcul des silhouettes manquantes se fait en arriere-plan : la
-  liste s'affiche d'abord, les silhouettes se posent apres.
-- Correction liee : le cache ne bloque plus la suppression d'un
-  dossier vide de sons.
+- A l'arret, l'analyseur resume le son entier comme avant.
+- Pendant la lecture, il suit la position : 12 images par seconde,
+  fenetre courte centree sur la tete de lecture, montee immediate et
+  retombee amortie comme un vrai vu-metre.
+- Le calcul vit dans noyau/spectre.py, teste : une sinusoide a 440 Hz
+  doit allumer la bande de 440 Hz, le silence donne zero, et le cout
+  par image est mesure par un test (budget 12 i/s).
+- L'animation s'arrete a la pause, au stop, a la fin du son et au
+  changement d'onglet — la lecon du voyant REC, appliquee partout.
 
-Fichiers : main.py, noyau/vignettes.py, noyau/bibliotheque.py,
-noyau/__init__.py, tests/test_vignettes.py, tests/test_bibliotheque.py,
-tests/verificateur.py.
+Fichiers : main.py, noyau/spectre.py, noyau/__init__.py,
+tests/test_spectre.py, tests/verificateur.py.
 
-Tests attendus : 138.
+Tests attendus : 149.
