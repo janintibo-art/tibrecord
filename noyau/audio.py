@@ -406,6 +406,86 @@ def highpass(sample, freq=45.0, order=2):
 
 
 # --------------------------------------------------------------------------
+# Egaliseur 3 bandes leger
+# --------------------------------------------------------------------------
+def eq3(sample, low_db=0.0, mid_db=0.0, high_db=0.0,
+        low_hz=180.0, high_hz=3200.0):
+    """Egaliseur trois bandes sans dependance externe.
+
+    Le signal est separe par deux filtres passe-bas a un pole : grave,
+    medium et aigu sont ensuite recombines avec un gain independant.
+    L'objectif est un correcteur musical leger, adapte au traitement
+    hors-ligne sur telephone plutot qu'un EQ chirurgical de mastering.
+    """
+    if not sample.data or sample.rate <= 0:
+        return sample
+    if abs(low_db) < 1e-9 and abs(mid_db) < 1e-9 and abs(high_db) < 1e-9:
+        return sample
+
+    nyq = sample.rate * 0.5
+    low_hz = max(20.0, min(float(low_hz), nyq * 0.35))
+    high_hz = max(low_hz * 1.5, min(float(high_hz), nyq * 0.90))
+
+    a_low = math.exp(-2.0 * math.pi * low_hz / sample.rate)
+    a_high = math.exp(-2.0 * math.pi * high_hz / sample.rate)
+    gl = db_to_lin(low_db)
+    gm = db_to_lin(mid_db)
+    gh = db_to_lin(high_db)
+
+    lp_low = 0.0
+    lp_high = 0.0
+    out = []
+    for x in sample.data:
+        lp_low = a_low * lp_low + (1.0 - a_low) * x
+        lp_high = a_high * lp_high + (1.0 - a_high) * x
+        grave = lp_low
+        medium = lp_high - lp_low
+        aigu = x - lp_high
+        out.append(grave * gl + medium * gm + aigu * gh)
+    sample.data = out
+    return sample
+
+
+def studio_rack(sample, input_gain_db=0.0,
+                low_db=0.0, mid_db=0.0, high_db=0.0,
+                comp_threshold_db=-18.0, comp_ratio=3.0,
+                sat_drive=1.3, sat_mix=0.25,
+                ceiling_db=-0.3):
+    """Chaine manuelle du rack Studio de l'interface.
+
+    Ordre : gain d'entree -> EQ 3 bandes -> compresseur -> saturation ->
+    limiteur de sortie. Renvoie (sample, rapport) comme ``process``.
+    """
+    before = sample.info()
+    if abs(input_gain_db) > 1e-9:
+        apply_gain(sample, input_gain_db)
+    eq3(sample, low_db, mid_db, high_db)
+    if comp_ratio > 1.001:
+        compress(sample, threshold_db=comp_threshold_db,
+                 ratio=comp_ratio, attack_ms=8.0, release_ms=90.0)
+    if sat_drive > 1.0 and sat_mix > 0.0:
+        saturate(sample, drive=sat_drive, mix=max(0.0, min(1.0, sat_mix)))
+    limit(sample, ceiling_db=ceiling_db)
+    after = sample.info()
+    return sample, {
+        "avant": before,
+        "apres": after,
+        "gain_db": round(after["rms_db"] - before["rms_db"], 2),
+        "reglages": {
+            "input_gain_db": input_gain_db,
+            "low_db": low_db,
+            "mid_db": mid_db,
+            "high_db": high_db,
+            "comp_threshold_db": comp_threshold_db,
+            "comp_ratio": comp_ratio,
+            "sat_drive": sat_drive,
+            "sat_mix": sat_mix,
+            "ceiling_db": ceiling_db,
+        },
+    }
+
+
+# --------------------------------------------------------------------------
 # Saturation
 # --------------------------------------------------------------------------
 def saturate(sample, drive=1.5, mix=0.4):

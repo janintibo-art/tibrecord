@@ -220,3 +220,37 @@ class TestEditeur(unittest.TestCase):
         self.assertGreater(len(c.data), 0)
         c, _ = audio.process(c, "doux")
         self.assertGreater(len(c.data), 0)
+
+class TestRackStudio(unittest.TestCase):
+    """Traitements utilises par les molettes du rack Studio."""
+
+    def test_eq3_a_zero_est_transparent(self):
+        src = [0.25 * math.sin(i / 11.0) for i in range(2000)]
+        s = audio.Sample(list(src), 44100)
+        audio.eq3(s, 0.0, 0.0, 0.0)
+        self.assertEqual(s.data, src)
+
+    def test_eq3_peut_pousser_le_grave(self):
+        d = [0.20 * math.sin(2 * math.pi * 80.0 * i / 44100.0)
+             for i in range(22050)]
+        s = audio.Sample(d, 44100)
+        avant = s.rms_db()
+        audio.eq3(s, low_db=6.0)
+        self.assertGreater(s.rms_db(), avant + 2.5)
+
+    def test_rack_respecte_le_plafond(self):
+        d = [0.75 * math.sin(i / 7.0) for i in range(6000)]
+        s = audio.Sample(d, 44100)
+        s, _ = audio.studio_rack(
+            s, input_gain_db=12.0, low_db=6.0, mid_db=4.0,
+            high_db=5.0, comp_threshold_db=-24.0, comp_ratio=5.0,
+            sat_drive=2.5, sat_mix=0.5, ceiling_db=-0.5)
+        self.assertLessEqual(s.peak_db(), -0.35)
+
+    def test_rack_renvoie_un_rapport(self):
+        s = audio.Sample([0.1 * math.sin(i / 9.0) for i in range(5000)], 44100)
+        _, rap = audio.studio_rack(s, input_gain_db=3.0)
+        self.assertIn("avant", rap)
+        self.assertIn("apres", rap)
+        self.assertIn("reglages", rap)
+        self.assertAlmostEqual(rap["reglages"]["input_gain_db"], 3.0)

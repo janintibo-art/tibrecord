@@ -78,6 +78,17 @@ class TestEnregistreur(unittest.TestCase):
         self.assertLessEqual(self.e.niveau_db(), 0.1)
         self.e.arreter()
 
+    def test_instantane_ne_vide_pas_la_capture(self):
+        self.e.demarrer()
+        time.sleep(0.2)
+        snap = self.e.instantane(128)
+        avant = self.e.duree_s
+        self.assertGreater(len(snap), 0)
+        self.assertLessEqual(len(snap), 128)
+        self.assertGreater(avant, 0.0)
+        s = self.e.arreter()
+        self.assertGreater(len(s.data), len(snap))
+
     def test_micro_indisponible_hors_android(self):
         self.assertFalse(self.e.disponible())
         self.assertFalse(enregistrement.micro_autorise())
