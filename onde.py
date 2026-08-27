@@ -8,11 +8,16 @@ compteur descend au dixieme de milliseconde.
 Ce module ne depend que de Kivy et du noyau audio.
 """
 
-from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
+import math
+
+from kivy.graphics import (Color, Line, Rectangle, RoundedRectangle,
+                           Triangle)
 from kivy.metrics import dp
+from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
 from noyau import audio
+from noyau.temps import graduations
 
 FOND = (0.06, 0.06, 0.08, 1)
 GRILLE = (0.22, 0.22, 0.26, 1)
@@ -21,6 +26,8 @@ ONDE_HORS = (0.30, 0.32, 0.38, 1)
 SELECTION = (0.30, 0.85, 0.95, 0.13)
 POIGNEE = (0.95, 0.55, 0.15, 1)
 TETE = (1.0, 0.85, 0.25, 1)
+GRADUATION = (0.45, 0.47, 0.55, 1)
+GRADUATION_TXT = (0.66, 0.68, 0.74, 1)
 
 
 class Onde(Widget):
@@ -43,6 +50,7 @@ class Onde(Widget):
         self.sel_debut, self.sel_fin = 0.0, 1.0
         self.tete = None
         self.on_change = on_change
+        self.regle = None
         self._prise = None
         self.bind(pos=self.redessiner, size=self.redessiner)
 
@@ -55,6 +63,8 @@ class Onde(Widget):
         self._pics = []
         self._fenetre_calculee = None
         self.redessiner()
+        if self.regle is not None:
+            self.regle.redessiner()
 
     @property
     def zoom(self):
@@ -97,6 +107,8 @@ class Onde(Widget):
         self.fen_debut, self.fen_fin = d, d + largeur
         self._pics = []
         self.redessiner()
+        if self.regle is not None:
+            self.regle.redessiner()
         if self.on_change:
             self.on_change()
 
@@ -189,12 +201,34 @@ class Onde(Widget):
                 RoundedRectangle(pos=(xh - dp(6), y0),
                                  size=(dp(12), dp(16)), radius=[3])
 
-            if self.tete is not None:
-                ft = (self.tete - self.fen_debut) / largeur
-                if 0 <= ft <= 1:
-                    Color(*TETE)
-                    Line(points=[x0 + ft * w, y0, x0 + ft * w, y0 + h],
-                         width=dp(1.5))
+        self._dessiner_tete()
+
+    def _dessiner_tete(self):
+        """Dessine la seule tete de lecture, dans un calque a part.
+
+        Separee du reste pour que l'animation ne repeigne pas toute la
+        forme d'onde : sur un telephone, ca fait la difference entre une
+        barre fluide et une barre qui saccade.
+        """
+        self.canvas.after.clear()
+        if self.tete is None or self.sample is None:
+            return
+        largeur = max(self.fen_fin - self.fen_debut, 1e-9)
+        ft = (self.tete - self.fen_debut) / largeur
+        if not 0 <= ft <= 1:
+            return
+        x = self.x + ft * self.width
+        y0, h = self.y, self.height
+        with self.canvas.after:
+            Color(*TETE)
+            Line(points=[x, y0, x, y0 + h], width=dp(1.6))
+            Triangle(points=[x - dp(5), y0 + h, x + dp(5), y0 + h,
+                             x, y0 + h - dp(7)])
+
+    def poser_tete(self, fraction):
+        """Deplace la tete de lecture. None l'efface."""
+        self.tete = fraction
+        self._dessiner_tete()
 
     # ------------------------------------------------------------ touches
     def _fraction(self, x):
@@ -234,6 +268,62 @@ class Onde(Widget):
         self.redessiner()
         if self.on_change:
             self.on_change()
+
+
+class Regle(Widget):
+    """Bande de temps sous la forme d'onde.
+
+    Elle suit exactement la fenetre de l'onde : quand on zoome, les
+    graduations se resserrent et les nombres se precisent. C'est ce qui
+    permet de dire "je coupe a 1,2 s" en regardant l'ecran, sans
+    calculer.
+    """
+
+    def __init__(self, onde, **kw):
+        super().__init__(**kw)
+        self.onde = onde
+        self._etiquettes = []
+        self.bind(pos=self.redessiner, size=self.redessiner)
+
+    def redessiner(self, *_a):
+        self.canvas.clear()
+        x0, y0, w, h = self.x, self.y, self.width, self.height
+        with self.canvas:
+            Color(*FOND)
+            Rectangle(pos=(x0, y0), size=(w, h))
+            Color(*GRILLE)
+            Line(points=[x0, y0 + h - 1, x0 + w, y0 + h - 1], width=1)
+
+        for lbl in self._etiquettes:
+            self.remove_widget(lbl)
+        self._etiquettes = []
+
+        o = self.onde
+        if o is None or o.sample is None or w < 10:
+            return
+
+        duree = o.duree_ms()
+        t0, t1 = o.fen_debut * duree, o.fen_fin * duree
+        visible = max(t1 - t0, 1e-9)
+        reperes = graduations(t0, t1, cibles=max(3, int(w / dp(74))))
+
+        with self.canvas:
+            Color(*GRADUATION)
+            for t, _ in reperes:
+                x = x0 + (t - t0) / visible * w
+                Line(points=[x, y0 + h, x, y0 + h - dp(6)], width=1)
+
+        # Le canvas ne dessine pas de texte : il faut de vrais Label.
+        for t, texte in reperes:
+            x = x0 + (t - t0) / visible * w
+            lbl = Label(text=texte, font_size=dp(9), color=GRADUATION_TXT,
+                        size_hint=(None, None),
+                        size=(dp(60), max(h - dp(7), dp(10))),
+                        halign="center", valign="middle")
+            lbl.text_size = lbl.size
+            lbl.pos = (x - dp(30), y0)
+            self.add_widget(lbl)
+            self._etiquettes.append(lbl)
 
 
 def horloge(secondes, precision=3):

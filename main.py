@@ -41,8 +41,8 @@ from kivy.uix.slider import Slider
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 
-from noyau import __version__, audio, enregistrement
-from onde import Onde, horloge, position_texte
+from noyau import __version__, audio, bibliotheque as bib, enregistrement
+from onde import Onde, Regle, horloge, position_texte
 
 # ---------------------------------------------------------------- palette
 FOND = (0.055, 0.055, 0.07, 1)
@@ -52,6 +52,8 @@ CYAN_S = (0.08, 0.38, 0.42, 1)
 ROUGE = (0.88, 0.24, 0.24, 1)
 VERT = (0.16, 0.62, 0.35, 1)
 GRIS = (0.19, 0.19, 0.23, 1)
+# Rouge eteint : signale la suppression sans crier plus fort que le reste.
+ROUGE_SOMBRE = (0.42, 0.16, 0.16, 1)
 GRIS_CHOIX = (0.27, 0.27, 0.33, 1)
 TEXTE = (0.90, 0.90, 0.92, 1)
 TEXTE_2 = (0.62, 0.62, 0.68, 1)
@@ -73,7 +75,10 @@ def dossier_sons():
     return d
 
 
-_LECTEUR = {"son": None}
+# "debut" et "duree_ms" servent a placer la tete de lecture : Kivy ne
+# donne pas de position fiable sur Android, on se repere donc a
+# l'horloge, ce qui suffit tant que le son n'est pas mis en pause.
+_LECTEUR = {"son": None, "debut": 0.0, "duree_ms": 0.0}
 
 
 def arreter_lecture():
@@ -84,7 +89,8 @@ def arreter_lecture():
             son.unload()
         except Exception:  # noqa: BLE001
             pass
-        _LECTEUR["son"] = None
+    _LECTEUR["son"] = None
+    _LECTEUR["duree_ms"] = 0.0
 
 
 def jouer_sample(sample, nom="apercu"):
@@ -98,7 +104,18 @@ def jouer_sample(sample, nom="apercu"):
     son.volume = 1.0
     son.play()
     _LECTEUR["son"] = son
+    _LECTEUR["debut"] = time.time()
+    _LECTEUR["duree_ms"] = sample.duration_ms
     return son
+
+
+def avancement_lecture():
+    """Fraction jouee de la lecture en cours, ou None si rien ne joue."""
+    if _LECTEUR.get("son") is None or _LECTEUR.get("duree_ms", 0) <= 0:
+        return None
+    ecoule = (time.time() - _LECTEUR["debut"]) * 1000.0
+    f = ecoule / _LECTEUR["duree_ms"]
+    return None if f > 1.0 else max(0.0, f)
 
 
 def journal_crash(texte):
@@ -453,10 +470,14 @@ class EcranEdit(BoxLayout):
         corps.add_widget(self.lbl_nom)
 
         cadre = Panneau(orientation="vertical", size_hint_y=None,
-                        height=dp(250), padding=dp(6))
+                        height=dp(272), padding=dp(6), spacing=dp(2))
         self.onde = Onde(on_change=self._maj_mesures)
         cadre.add_widget(self.onde)
+        self.regle = Regle(self.onde, size_hint_y=None, height=dp(20))
+        self.onde.regle = self.regle
+        cadre.add_widget(self.regle)
         corps.add_widget(cadre)
+        self._tic_tete = None
 
         self.lbl_mes = Label(text="", size_hint_y=None, height=dp(44),
                              font_size=dp(11), color=TEXTE)
@@ -479,7 +500,7 @@ class EcranEdit(BoxLayout):
         b_l.bind(on_release=lambda *_: self.lire())
         r_e.add_widget(b_l)
         b_st = Bouton(text="Stop", size_hint_x=0.4)
-        b_st.bind(on_release=lambda *_: arreter_lecture())
+        b_st.bind(on_release=lambda *_: self.stopper())
         r_e.add_widget(b_st)
         corps.add_widget(r_e)
 
@@ -601,24 +622,329 @@ class EcranEdit(BoxLayout):
             i0, i1 = int(a * r / 1000), int(b * r / 1000)
             bout = audio.Sample(self.sample.data[i0:i1], r, "selection")
             jouer_sample(bout, "selection")
+            self._suivre_tete()
         except Exception as e:  # noqa: BLE001
             self.journal("Lecture impossible : %s" % e)
 
-    def sauver(self):
-        if self.sample is None:
-            return
-        NomPopup("Nom du fichier", self.lbl_nom.text.replace(".wav", ""),
-                 self._faire_sauver).open()
+    # ------------------------------------------------------- tete de lecture
+    def _suivre_tete(self):
+        """Lance l'animation de la barre pendant la lecture.
 
-    def _faire_sauver(self, nom):
+        Vingt images par seconde : assez fluide pour l'oeil, assez leger
+        pour un telephone.
+        """
+        self._arreter_tete()
+        self._tic_tete = Clock.schedule_interval(self._maj_tete, 1 / 20.0)
+
+    def _arreter_tete(self):
+        if self._tic_tete is not None:
+            self._tic_tete.cancel()
+            self._tic_tete = None
+        self.onde.poser_tete(None)
+
+    def _maj_tete(self, *_a):
+        f = avancement_lecture()
+        if f is None:
+            self._arreter_tete()
+            return False
+        # La lecture porte sur la selection : la tete parcourt donc la
+        # selection, pas le son entier.
+        a, b = self.onde.sel_debut, self.onde.sel_fin
+        self.onde.poser_tete(a + (b - a) * f)
+
+    def stopper(self):
+        arreter_lecture()
+        self._arreter_tete()
+
+class ChoixPopup(Popup):
+    """Petit menu : un titre, une liste de boutons, une annulation.
+
+    Sert au menu d'un son et au choix d'un dossier de destination.
+    """
+
+    def __init__(self, titre, options, callback, **kw):
+        haut = min(dp(120) + dp(50) * len(options), dp(520))
+        super().__init__(title=titre, size_hint=(0.92, None), height=haut,
+                         **kw)
+        self.callback = callback
+        box = BoxLayout(orientation="vertical", spacing=dp(6),
+                        padding=dp(10))
+        sv = ScrollView(do_scroll_x=False)
+        liste = BoxLayout(orientation="vertical", spacing=dp(6),
+                          size_hint_y=None)
+        liste.bind(minimum_height=liste.setter("height"))
+        for texte, cle, couleur in options:
+            b = Bouton(text=texte, couleur=couleur, size_hint_y=None,
+                       height=dp(44), font_size=dp(13))
+            b.bind(on_release=lambda w, c=cle: self._choisir(c))
+            liste.add_widget(b)
+        sv.add_widget(liste)
+        box.add_widget(sv)
+        b_no = Bouton(text="Annuler", size_hint_y=None, height=dp(44))
+        b_no.bind(on_release=lambda *_: self.dismiss())
+        box.add_widget(b_no)
+        self.add_widget(box)
+
+    def _choisir(self, cle):
+        self.dismiss()
+        self.callback(cle)
+
+
+class EcranBiblio(BoxLayout):
+    """Bibliotheque : ranger, retrouver, renommer les prises.
+
+    La bibliotheque n'est rien d'autre que le dossier enregistrements/
+    et ses sous-dossiers. Aucun fichier d'index : si l'application
+    disparait, les sons restent lisibles par n'importe quoi.
+    """
+
+    def __init__(self, journal, ouvrir_dans_edit, **kw):
+        super().__init__(orientation="vertical", spacing=dp(6), **kw)
+        self.journal = journal
+        self.ouvrir_dans_edit = ouvrir_dans_edit
+        self.dossier_courant = bib.RACINE
+        self.tri = "date"
+        self.recherche = ""
+
+        r0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        self.spin_dossier = Choix(text=bib.RACINE, values=[bib.RACINE])
+        self.spin_dossier.bind(text=self._changer_dossier)
+        r0.add_widget(self.spin_dossier)
+        b_new = Bouton(text="+ Dossier", couleur=CYAN, size_hint_x=0.38,
+                       font_size=dp(12))
+        b_new.bind(on_release=lambda *_: self.nouveau_dossier())
+        r0.add_widget(b_new)
+        self.add_widget(r0)
+
+        r1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        self.champ = TextInput(hint_text="chercher", multiline=False,
+                               font_size=dp(14), size_hint_x=0.5)
+        self.champ.bind(text=self._changer_recherche)
+        r1.add_widget(self.champ)
+        self.spin_tri = Choix(text="date", values=list(bib.TRIS),
+                              size_hint_x=0.28, font_size=dp(12))
+        self.spin_tri.bind(text=self._changer_tri)
+        r1.add_widget(self.spin_tri)
+        b_maj = Bouton(text="Actualiser", size_hint_x=0.32, font_size=dp(11))
+        b_maj.bind(on_release=lambda *_: self.rafraichir())
+        r1.add_widget(b_maj)
+        self.add_widget(r1)
+
+        self.lbl_etat = Label(text="", size_hint_y=None, height=dp(22),
+                              font_size=dp(11), color=TEXTE_2)
+        self.add_widget(self.lbl_etat)
+
+        sv = ScrollView(do_scroll_x=False)
+        self.liste = BoxLayout(orientation="vertical", spacing=dp(4),
+                               size_hint_y=None, padding=(0, 0, dp(4), 0))
+        self.liste.bind(minimum_height=self.liste.setter("height"))
+        sv.add_widget(self.liste)
+        self.add_widget(sv)
+
+        r2 = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        b_ren = Bouton(text="Renommer le dossier", font_size=dp(11))
+        b_ren.bind(on_release=lambda *_: self.renommer_dossier())
+        r2.add_widget(b_ren)
+        b_sup = Bouton(text="Supprimer le dossier", font_size=dp(11),
+                       couleur=ROUGE_SOMBRE)
+        b_sup.bind(on_release=lambda *_: self.supprimer_dossier())
+        r2.add_widget(b_sup)
+        self.add_widget(r2)
+
+        self.rafraichir()
+
+    # ------------------------------------------------------------ chemins
+    def racine(self):
+        return dossier_sons()
+
+    def chemin_dossier(self):
+        if self.dossier_courant == bib.RACINE:
+            return self.racine()
+        return os.path.join(self.racine(), self.dossier_courant)
+
+    # ------------------------------------------------------------ etat
+    def _changer_dossier(self, _w, valeur):
+        self.dossier_courant = valeur
+        self.rafraichir()
+
+    def _changer_tri(self, _w, valeur):
+        self.tri = valeur
+        self.rafraichir()
+
+    def _changer_recherche(self, _w, valeur):
+        self.recherche = valeur
+        self.rafraichir()
+
+    def rafraichir(self):
+        """Relit le disque et redessine la liste.
+
+        On relit a chaque fois plutot que de garder un cache : c'est le
+        seul moyen de voir tout de suite une prise qui vient d'etre
+        enregistree.
+        """
+        racine = self.racine()
+        dossiers = [bib.RACINE] + bib.lister_dossiers(racine)
+        self.spin_dossier.values = dossiers
+        if self.dossier_courant not in dossiers:
+            self.dossier_courant = bib.RACINE
+            self.spin_dossier.text = bib.RACINE
+
+        items = bib.lister_sons(self.chemin_dossier())
+        total = len(items)
+        items = bib.chercher(items, self.recherche)
+        items = bib.trier(items, self.tri)
+
+        self.liste.clear_widgets()
+        if not items:
+            self.liste.add_widget(Label(
+                text="(aucun son ici)" if not self.recherche
+                else "(rien qui corresponde)",
+                size_hint_y=None, height=dp(60), font_size=dp(12),
+                color=TEXTE_2))
+        for it in items:
+            self.liste.add_widget(self._ligne(it))
+
+        duree = sum(i["duree_ms"] for i in items)
+        vu = "%d son%s" % (len(items), "s" if len(items) > 1 else "")
+        if len(items) != total:
+            vu += " sur %d" % total
+        self.lbl_etat.text = "%s   %s" % (vu, bib.duree_courte(duree))
+
+    def _ligne(self, item):
+        b = Bouton(text="%s\n[size=10sp]%s   %s[/size]" % (
+            item["nom"], bib.duree_courte(item["duree_ms"]),
+            bib.taille_courte(item["taille"])),
+            markup=True, halign="left", size_hint_y=None, height=dp(52),
+            font_size=dp(13))
+        b.bind(size=lambda w, v: setattr(w, "text_size",
+                                         (v[0] - dp(16), v[1])))
+        b.bind(on_release=lambda w, i=item: self.menu(i))
+        return b
+
+    # ------------------------------------------------------------ menu
+    def menu(self, item):
+        ChoixPopup(item["nom"], [
+            ("Ouvrir dans EDIT.", "ouvrir", CYAN),
+            ("Ecouter", "ecouter", VERT),
+            ("Renommer", "renommer", GRIS),
+            ("Deplacer vers...", "deplacer", GRIS),
+            ("Supprimer", "supprimer", ROUGE_SOMBRE),
+        ], lambda cle: self._action(cle, item)).open()
+
+    def _action(self, cle, item):
+        if cle == "ouvrir":
+            self.ouvrir(item)
+        elif cle == "ecouter":
+            self.ecouter(item)
+        elif cle == "renommer":
+            NomPopup("Nouveau nom", item["nom"],
+                     lambda n: self.renommer(item, n)).open()
+        elif cle == "deplacer":
+            self.choisir_destination(item)
+        elif cle == "supprimer":
+            ChoixPopup("Supprimer %s ?" % item["nom"],
+                       [("Oui, supprimer", "oui", ROUGE_SOMBRE)],
+                       lambda _c: self.supprimer(item)).open()
+
+    # ------------------------------------------------------------ actions
+    def ouvrir(self, item):
         try:
-            net = "".join(c if c.isalnum() or c in "-_ " else "_"
-                          for c in nom).strip() or "son"
-            chemin = os.path.join(dossier_sons(), net + ".wav")
-            audio.write_wav(chemin, self.sample)
-            self.journal("Ecrit : %s" % chemin)
+            s = audio.read_wav(item["chemin"])
+            self.ouvrir_dans_edit(s, item["nom"])
+            self.journal("Ouvert : %s" % item["nom"])
         except Exception as e:  # noqa: BLE001
-            self.journal("Ecriture impossible : %s" % e)
+            self.journal("Lecture impossible : %s" % e)
+
+    def ecouter(self, item):
+        try:
+            jouer_sample(audio.read_wav(item["chemin"]), "biblio")
+        except Exception as e:  # noqa: BLE001
+            self.journal("Ecoute impossible : %s" % e)
+
+    def renommer(self, item, nom):
+        try:
+            neuf = bib.renommer(item["chemin"], nom)
+            self.journal("Renomme : %s" % os.path.basename(neuf))
+            self.rafraichir()
+        except Exception as e:  # noqa: BLE001
+            self.journal("Renommage impossible : %s" % e)
+
+    def choisir_destination(self, item):
+        cibles = [(bib.RACINE, bib.RACINE, GRIS)]
+        for n in bib.lister_dossiers(self.racine()):
+            cibles.append((n, n, GRIS))
+        cibles.append(("+ Nouveau dossier", "__neuf__", CYAN))
+        ChoixPopup("Deplacer vers", cibles,
+                   lambda c: self._deplacer_vers(item, c)).open()
+
+    def _deplacer_vers(self, item, cible):
+        if cible == "__neuf__":
+            NomPopup("Nom du dossier", "",
+                     lambda n: self._deplacer_vers(item, n)).open()
+            return
+        try:
+            dest = self.racine() if cible == bib.RACINE \
+                else bib.creer_dossier(self.racine(), cible)
+            bib.deplacer(item["chemin"], dest)
+            self.journal("%s -> %s" % (item["nom"], cible))
+            self.rafraichir()
+        except Exception as e:  # noqa: BLE001
+            self.journal("Deplacement impossible : %s" % e)
+
+    def supprimer(self, item):
+        if bib.supprimer(item["chemin"]):
+            self.journal("Supprime : %s" % item["nom"])
+        else:
+            self.journal("Suppression impossible : %s" % item["nom"])
+        self.rafraichir()
+
+    # ------------------------------------------------------------ dossiers
+    def nouveau_dossier(self):
+        NomPopup("Nom du dossier", "", self._creer_dossier).open()
+
+    def _creer_dossier(self, nom):
+        try:
+            bib.creer_dossier(self.racine(), nom)
+            self.journal("Dossier cree : %s" % bib.nom_propre(nom, "dossier"))
+            self.rafraichir()
+            self.spin_dossier.text = bib.nom_propre(nom, "dossier")
+        except Exception as e:  # noqa: BLE001
+            self.journal("Creation impossible : %s" % e)
+
+    def renommer_dossier(self):
+        if self.dossier_courant == bib.RACINE:
+            self.journal("Choisis d'abord un dossier a renommer.")
+            return
+        NomPopup("Nouveau nom du dossier", self.dossier_courant,
+                 self._renommer_dossier).open()
+
+    def _renommer_dossier(self, nom):
+        try:
+            bib.renommer_dossier(self.racine(), self.dossier_courant, nom)
+            self.journal("Dossier renomme : %s" % bib.nom_propre(nom))
+            self.dossier_courant = bib.nom_propre(nom)
+            self.spin_dossier.text = self.dossier_courant
+            self.rafraichir()
+        except FileExistsError:
+            self.journal("Un dossier porte deja ce nom.")
+        except Exception as e:  # noqa: BLE001
+            self.journal("Renommage impossible : %s" % e)
+
+    def supprimer_dossier(self):
+        if self.dossier_courant == bib.RACINE:
+            self.journal("Le dossier principal ne peut pas etre supprime.")
+            return
+        n = bib.compter(self.chemin_dossier())
+        if n:
+            self.journal(
+                "%s contient encore %d son(s) : deplace-les d'abord."
+                % (self.dossier_courant, n))
+            return
+        if bib.supprimer_dossier(self.racine(), self.dossier_courant):
+            self.journal("Dossier supprime : %s" % self.dossier_courant)
+            self.dossier_courant = bib.RACINE
+            self.spin_dossier.text = bib.RACINE
+        self.rafraichir()
 
 
 class EcranTuto(BoxLayout):
@@ -634,6 +960,10 @@ ENREG.
 EDIT.
   La forme d'onde se ZOOME : jusqu'a voir les echantillons un par un.
   Les deux poignees orange delimitent la selection.
+  Sous l'onde, la reglette donne le temps. Elle se resserre quand tu
+  zoomes : de la minute au dixieme de milliseconde.
+  Pendant la lecture, une barre jaune parcourt la selection : tu vois
+  ou tu en es, donc ou couper.
   Le compteur affiche le temps ET le numero d'echantillon.
 
   Rogner      reduit le son a la selection
@@ -644,9 +974,21 @@ EDIT.
 
   Enregistrer ecrit un WAV mono 16 bits 44,1 kHz.
 
+BIBLIO.
+  Tes prises rangees. Choisis un dossier en haut, cherche par nom,
+  trie par date, nom, duree ou taille.
+  Appuie sur un son pour l'ouvrir dans EDIT., l'ecouter, le renommer,
+  le deplacer dans un dossier ou le supprimer.
+  + Dossier cree un rangement : kicks, voix, ambiances...
+  Un dossier ne se supprime que s'il est vide : on ne perd pas dix
+  prises d'un seul appui.
+
 OU SONT LES FICHIERS
-  Dans le sous-dossier enregistrements/ du dossier de l'application.
-  Le chemin exact s'affiche dans le journal a chaque ecriture.
+  Dans le sous-dossier enregistrements/ du dossier de l'application,
+  et dans ses sous-dossiers pour ce qui est range.
+  Ce sont de vrais fichiers WAV : aucun catalogue cache, rien a
+  exporter. Le chemin exact s'affiche dans le journal a chaque
+  ecriture.
 
 SI CA PLANTE
   L'application affiche la trace en vert au lieu de disparaitre, et
@@ -689,7 +1031,7 @@ class EcranErreur(BoxLayout):
 
 # --------------------------------------------------------------------------
 class Root(BoxLayout):
-    ONGLETS = ("ENREG.", "EDIT.", "TUTO")
+    ONGLETS = ("ENREG.", "EDIT.", "BIBLIO.", "TUTO")
 
     def __init__(self, **kw):
         super().__init__(orientation="vertical", spacing=dp(6),
@@ -701,7 +1043,7 @@ class Root(BoxLayout):
         barre = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(4))
         self.tabs = []
         for i, nom in enumerate(self.ONGLETS):
-            b = Bouton(text=nom, font_size=dp(12), rayon=6)
+            b = Bouton(text=nom, font_size=dp(11), rayon=6)
             b.bind(on_release=lambda w, k=i: self.afficher(k))
             self.tabs.append(b)
             barre.add_widget(b)
@@ -719,10 +1061,13 @@ class Root(BoxLayout):
         self.add_widget(sv)
 
         self.ec_edit = self._fabriquer("EDIT.", EcranEdit, self.journal)
+        self.ec_biblio = self._fabriquer("BIBLIO.", EcranBiblio,
+                                         self.journal, self._ouvrir_depuis)
         self.ecrans = [
             self._fabriquer("ENREG.", EcranEnreg, self.journal,
                             self._apres_capture),
             self.ec_edit,
+            self.ec_biblio,
             self._fabriquer("TUTO", EcranTuto),
         ]
         self.afficher(0)
@@ -739,6 +1084,12 @@ class Root(BoxLayout):
             self.ec_edit.poser(sample, "enregistrement")
             self.afficher(1)
 
+    def _ouvrir_depuis(self, sample, nom):
+        """Un son de la bibliotheque part vers l'onglet EDIT."""
+        if isinstance(self.ec_edit, EcranEdit):
+            self.ec_edit.poser(sample, nom)
+            self.afficher(1)
+
     @mainthread
     def journal(self, txt):
         lignes = self.log.text.split("\n")
@@ -748,6 +1099,13 @@ class Root(BoxLayout):
 
     def afficher(self, i):
         arreter_lecture()
+        if isinstance(self.ec_edit, EcranEdit):
+            self.ec_edit._arreter_tete()
+        # En arrivant sur la bibliotheque on relit le disque : une prise
+        # enregistree entre-temps doit apparaitre sans rien demander.
+        if self.ONGLETS[i] == "BIBLIO." and isinstance(self.ec_biblio,
+                                                       EcranBiblio):
+            self.ec_biblio.rafraichir()
         self.zone.clear_widgets()
         self.zone.add_widget(self.ecrans[i])
         for j, b in enumerate(self.tabs):
