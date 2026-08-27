@@ -1,13 +1,15 @@
-# Patch 08 — depend de la v0.3.0
+# Patch 09 — remplace le patch 08, depend de la v0.3.0
 
-Corrige l'acces aux fichiers du telephone. Ne touche PAS a
-l'enregistrement : le plantage du bouton REC n'est pas encore
-diagnostique, il faut la ligne d'erreur exacte.
+CORRIGE LE PLANTAGE du bouton ENREGISTRER.
 
-Fichiers : main.py, noyau/stockage.py, noyau/__init__.py,
-tests/test_stockage.py.
+Cause : noyau/enregistrement.py du depot etait la version d'origine,
+sans la methode instantane(). Le main.py, lui, l'appelait a 24 images
+par seconde pendant la capture. Le patch 05 contenait bien le fichier
+corrige, mais il n'a jamais atterri dans le depot.
 
-buildozer.spec n'est pas dans le zip : seule la ligne de version
-change, par une commande a part.
+Ce zip contient noyau/enregistrement.py. C'est le fichier essentiel.
 
-Tests attendus : 112 (96 + 16 nouveaux).
+Contient aussi tout le patch 08 (acces aux fichiers du telephone) :
+inutile d'appliquer le 08 separement.
+
+Tests attendus : 116.

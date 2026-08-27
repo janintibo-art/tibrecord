@@ -54,6 +54,32 @@ class TestAnimations(unittest.TestCase):
                 % (f, ouvertes))
 
 
+class TestAccordAvecLeNoyau(unittest.TestCase):
+    """Le plantage du bouton ENREGISTRER : main.py appelait
+    Enregistreur.instantane() alors que le noyau du depot etait une
+    version anterieure, sans cette methode.
+
+    Chaque fichier etait correct pris seul. C'est leur accord qui ne
+    l'etait pas, et rien ne le verifiait."""
+
+    def test_les_objets_du_noyau_ont_ce_qu_on_leur_demande(self):
+        for f in FICHIERS:
+            absents = v.attributs_absents(f)
+            self.assertEqual(
+                absents, [],
+                "%s utilise des membres absents du noyau : %s\n"
+                "Le noyau du depot est probablement plus ancien que "
+                "l'interface : un patch n'a pas ete applique." % (f, absents))
+
+    def test_les_fonctions_du_noyau_existent(self):
+        for f in FICHIERS:
+            absentes = v.fonctions_absentes(f)
+            self.assertEqual(
+                absentes, [],
+                "%s appelle des fonctions absentes du noyau : %s"
+                % (f, absentes))
+
+
 class TestOutilLuiMeme(unittest.TestCase):
     """Un verificateur qui ne detecte plus rien ne sert a rien. On lui
     donne du code fautif pour verifier qu'il reagit encore."""
@@ -69,6 +95,23 @@ class TestOutilLuiMeme(unittest.TestCase):
         connus = v._membres(classes["A"], classes) | v.KIVY
         self.assertNotIn("disparue", connus)
         self.assertIn("f", connus)
+
+    def test_il_repere_un_noyau_trop_ancien(self):
+        """On lui donne le defaut reel : un appel a une methode que la
+        classe du noyau ne possede pas."""
+        import ast
+        classes = v._classes_du_noyau()
+        self.assertIn("Enregistreur", classes)
+        self.assertIn("instantane", classes["Enregistreur"])
+        self.assertNotIn("methode_inventee", classes["Enregistreur"])
+
+    def test_il_voit_les_attributs_crees_dans_init(self):
+        """derniere_erreur n'existe pas sur la classe, seulement sur
+        l'instance : le controle doit quand meme le connaitre, sinon il
+        crie au loup a chaque ligne."""
+        classes = v._classes_du_noyau()
+        for attendu in ("derniere_erreur", "en_cours", "rms_courant"):
+            self.assertIn(attendu, classes["Enregistreur"], attendu)
 
     def test_il_suit_l_heritage(self):
         import ast

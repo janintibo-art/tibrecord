@@ -145,3 +145,110 @@ def horloges_non_arretees(fichier):
         if lance and not annule:
             coupables.append((ligne, cls.name))
     return sorted(coupables)
+
+
+# ------------------------------------------------------------ desynchro
+# Le plantage du bouton ENREGISTRER venait de la : main.py appelait
+# `self.enr.instantane(420)` alors que le noyau du depot etait une
+# version anterieure, sans cette methode. Les deux fichiers compilaient,
+# les tests passaient, et l'application mourait au premier appui.
+#
+# Ce controle relie les deux : il retrouve `self.enr = enregistrement.
+# Enregistreur(...)`, puis verifie que chaque `self.enr.machin` existe
+# vraiment dans la classe.
+
+MODULES_NOYAU = ("audio", "bibliotheque", "enregistrement", "stockage",
+                 "temps")
+
+
+def _classes_du_noyau():
+    """Les classes du noyau et TOUT ce qu'elles exposent.
+
+    On lit la source plutot que d'interroger la classe : un attribut cree
+    dans __init__ (self.derniere_erreur, self.en_cours) n'existe pas sur
+    la classe elle-meme, et hasattr le declarerait absent a tort.
+    """
+    out = {}
+    for nom in MODULES_NOYAU:
+        chemin = os.path.join(RACINE, "noyau", "%s.py" % nom)
+        if not os.path.isfile(chemin):
+            continue
+        with open(chemin, encoding="utf-8") as f:
+            arbre = ast.parse(f.read())
+        classes = {n.name: n for n in ast.walk(arbre)
+                   if isinstance(n, ast.ClassDef)}
+        for nom_classe, cls in classes.items():
+            out.setdefault(nom_classe, _membres(cls, classes))
+    return out
+
+
+def attributs_absents(fichier):
+    """self.truc = Module.Classe(...) puis self.truc.machin inexistant.
+
+    Renvoie (ligne, attribut, classe, membre).
+    """
+    arbre = _lire(fichier)
+    classes = _classes_du_noyau()
+
+    # 1) reperer les self.X = <Classe du noyau>(...)
+    origine = {}
+    for n in ast.walk(arbre):
+        if not isinstance(n, ast.Assign) or not isinstance(n.value, ast.Call):
+            continue
+        f = n.value.func
+        nom_classe = f.attr if isinstance(f, ast.Attribute) else (
+            f.id if isinstance(f, ast.Name) else None)
+        if nom_classe not in classes:
+            continue
+        for t in n.targets:
+            if (isinstance(t, ast.Attribute)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == "self"):
+                origine[t.attr] = nom_classe
+
+    # 2) verifier chaque self.X.machin
+    soucis = set()
+    for n in ast.walk(arbre):
+        if not isinstance(n, ast.Attribute):
+            continue
+        base = n.value
+        if not (isinstance(base, ast.Attribute)
+                and isinstance(base.value, ast.Name)
+                and base.value.id == "self"
+                and base.attr in origine):
+            continue
+        nom_classe = origine[base.attr]
+        if n.attr not in classes[nom_classe]:
+            soucis.add((n.lineno, base.attr, nom_classe, n.attr))
+    return sorted(soucis)
+
+
+def fonctions_absentes(fichier):
+    """audio.machin() ou stockage.machin() qui n'existe pas dans le module.
+
+    Meme famille de defaut, un cran plus simple : l'interface appelle une
+    fonction du noyau qui n'a jamais ete ecrite, ou qui a ete renommee.
+    """
+    import importlib
+    arbre = _lire(fichier)
+    alias = {}
+    for n in ast.walk(arbre):
+        if isinstance(n, ast.ImportFrom) and (n.module or "") == "noyau":
+            for a in n.names:
+                if a.name in MODULES_NOYAU:
+                    alias[a.asname or a.name] = a.name
+    modules = {}
+    for court, vrai in alias.items():
+        try:
+            modules[court] = importlib.import_module("noyau.%s" % vrai)
+        except Exception:  # noqa: BLE001
+            continue
+    soucis = set()
+    for n in ast.walk(arbre):
+        if (isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name)
+                and n.value.id in modules
+                and not n.attr.startswith("_")
+                and not hasattr(modules[n.value.id], n.attr)):
+            soucis.add((n.lineno, n.value.id, n.attr))
+    return sorted(soucis)

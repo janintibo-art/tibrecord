@@ -60,6 +60,28 @@ class Enregistreur:
     def niveau_db(self):
         return audio.lin_to_db(self.crete_courante)
 
+    def instantane(self, n=512):
+        """Copie les derniers echantillons pour le monitoring visuel.
+
+        Cette lecture est volontairement sans effet sur la capture : elle
+        ne retire rien du tampon et ne change pas le moteur audio.
+        """
+        n = max(1, int(n))
+        with self._verrou:
+            if not self.morceaux:
+                return []
+            out = []
+            for bloc in reversed(self.morceaux):
+                besoin = n - len(out)
+                if besoin <= 0:
+                    break
+                if len(bloc) <= besoin:
+                    out[0:0] = bloc
+                else:
+                    out[0:0] = bloc[-besoin:]
+                    break
+            return out[-n:]
+
     def disponible(self):
         """Le micro est-il utilisable sur cet appareil ?"""
         if not IS_ANDROID:

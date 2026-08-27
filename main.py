@@ -1083,7 +1083,11 @@ class EcranEnreg(BoxLayout):
         self.lbl_temps.text = horloge(self.enr.duree_s)
         db = self.enr.niveau_db()
         self.vu.poser(db)
-        self.scope.poser(self.enr.instantane(420))
+        # Garde-fou : si le noyau est plus ancien que l'interface,
+        # l'oscilloscope s'efface au lieu de faire perdre la prise en
+        # cours. Une capture qui continue vaut mieux qu'un plantage.
+        instantane = getattr(self.enr, "instantane", None)
+        self.scope.poser(instantane(420) if instantane else [])
         rms_db = audio.lin_to_db(self.enr.rms_courant)
         if db > -90:
             self.lbl_niveau.text = "PK %.1f  /  RMS %.1f dB" % (db, rms_db)
