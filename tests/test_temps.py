@@ -55,6 +55,45 @@ class TestEtiquettes(unittest.TestCase):
         self.assertEqual(temps.etiquette_temps(0.0, 1000.0), "0 s")
 
 
+class TestCompteur(unittest.TestCase):
+    """Le compteur de lecture doit garder une largeur constante :
+    sinon les chiffres dansent pendant que le son defile."""
+
+    def test_toujours_le_meme_nombre_de_caracteres(self):
+        largeurs = {len(temps.horloge_precise(v))
+                    for v in (0.0, 5.0, 999.0, 1234.0, 59999.0)}
+        self.assertEqual(len(largeurs), 1)
+
+    def test_millisecondes_affichees(self):
+        self.assertEqual(temps.horloge_precise(1234.0), "1.234"[:0] + "0:01.234")
+
+    def test_minutes(self):
+        self.assertTrue(temps.horloge_precise(185000.0).startswith("3:05"))
+
+    def test_avec_total(self):
+        txt = temps.horloge_precise(1000.0, 2000.0)
+        self.assertIn("/", txt)
+
+    def test_negatif_ramene_a_zero(self):
+        self.assertEqual(temps.horloge_precise(-50.0), "0:00.000")
+
+
+class TestSousGraduations(unittest.TestCase):
+
+    def test_plus_nombreuses_que_les_grandes(self):
+        g = temps.graduations(0.0, 3800.0)
+        p = temps.sous_graduations(0.0, 3800.0)
+        self.assertGreater(len(p), len(g))
+
+    def test_dans_la_fenetre(self):
+        for t in temps.sous_graduations(1000.0, 2000.0):
+            self.assertGreaterEqual(t, 1000.0 - 1e-6)
+            self.assertLessEqual(t, 2000.0 + 1e-6)
+
+    def test_fenetre_vide(self):
+        self.assertEqual(temps.sous_graduations(0.0, 0.0), [])
+
+
 class TestGraduations(unittest.TestCase):
 
     def test_reperes_dans_la_fenetre(self):

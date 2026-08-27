@@ -30,9 +30,9 @@ android.accept_sdk_license = True
 p4a.branch = v2024.01.21
 
 # icone et ecran de demarrage : decommente quand les images existent
-# icon.filename = %(source.dir)s/assets/icon.png
-# presplash.filename = %(source.dir)s/assets/presplash.png
-# android.presplash_color = #0e0e12
+icon.filename = %(source.dir)s/assets/icon.png
+presplash.filename = %(source.dir)s/assets/presplash.png
+android.presplash_color = #0e0e12
 
 [buildozer]
 log_level = 2

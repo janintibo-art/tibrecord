@@ -17,7 +17,7 @@ from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
 from noyau import audio
-from noyau.temps import graduations
+from noyau.temps import graduations, sous_graduations
 
 FOND = (0.06, 0.06, 0.08, 1)
 GRILLE = (0.22, 0.22, 0.26, 1)
@@ -26,7 +26,8 @@ ONDE_HORS = (0.30, 0.32, 0.38, 1)
 SELECTION = (0.30, 0.85, 0.95, 0.13)
 POIGNEE = (0.95, 0.55, 0.15, 1)
 TETE = (1.0, 0.85, 0.25, 1)
-GRADUATION = (0.45, 0.47, 0.55, 1)
+GRADUATION = (0.52, 0.54, 0.62, 1)
+SOUS_GRADUATION = (0.30, 0.31, 0.37, 1)
 GRADUATION_TXT = (0.66, 0.68, 0.74, 1)
 
 
@@ -305,13 +306,20 @@ class Regle(Widget):
         duree = o.duree_ms()
         t0, t1 = o.fen_debut * duree, o.fen_fin * duree
         visible = max(t1 - t0, 1e-9)
-        reperes = graduations(t0, t1, cibles=max(3, int(w / dp(74))))
+        cibles = max(3, int(w / dp(74)))
+        reperes = graduations(t0, t1, cibles)
+        petits = sous_graduations(t0, t1, cibles)
 
         with self.canvas:
+            # Petits traits d'abord : ils passent sous les grands.
+            Color(*SOUS_GRADUATION)
+            for t in petits:
+                x = x0 + (t - t0) / visible * w
+                Line(points=[x, y0 + h, x, y0 + h - dp(3)], width=1)
             Color(*GRADUATION)
             for t, _ in reperes:
                 x = x0 + (t - t0) / visible * w
-                Line(points=[x, y0 + h, x, y0 + h - dp(6)], width=1)
+                Line(points=[x, y0 + h, x, y0 + h - dp(7)], width=dp(1.2))
 
         # Le canvas ne dessine pas de texte : il faut de vrais Label.
         for t, texte in reperes:

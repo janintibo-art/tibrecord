@@ -41,6 +41,21 @@ def decimales(pas_ms):
     return 4
 
 
+def horloge_precise(ms, total_ms=None):
+    """Compteur de lecture : m:ss.mmm, toujours au meme nombre de
+    chiffres pour que l'affichage ne saute pas d'un dixieme a l'autre.
+
+    Avec total_ms, renvoie "0:01.234 / 0:02.975".
+    """
+    def _un(v):
+        v = max(0.0, v) / 1000.0
+        m = int(v // 60)
+        return "%d:%06.3f" % (m, v - m * 60)
+    if total_ms is None:
+        return _un(ms)
+    return "%s / %s" % (_un(ms), _un(total_ms))
+
+
 def etiquette_temps(ms, pas_ms):
     """Format adapte au pas ET a la position dans le son.
 
@@ -79,3 +94,26 @@ def graduations(debut_ms, fin_ms, cibles=6):
             reperes.append((t, etiquette_temps(t, pas)))
         t += pas
     return reperes
+
+
+def sous_graduations(debut_ms, fin_ms, cibles=6, divisions=5):
+    """Petits traits entre deux reperes chiffres.
+
+    Sans eux on ne lit que "1 s" et "2 s", et l'oeil doit deviner le
+    milieu. Avec quatre traits intermediaires, on situe un point au
+    cinquieme de seconde sans calculer.
+    """
+    visible = fin_ms - debut_ms
+    if visible <= 0:
+        return []
+    pas = pas_lisible(visible, cibles) / float(max(2, divisions))
+    premier = math.floor(debut_ms / pas) * pas
+    petits = []
+    t = premier
+    for _ in range(10000):
+        if t > fin_ms + pas * 0.001:
+            break
+        if t >= debut_ms - pas * 0.001:
+            petits.append(t)
+        t += pas
+    return petits
