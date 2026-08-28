@@ -113,5 +113,26 @@ class TestGraduations(unittest.TestCase):
         self.assertLess(len(temps.graduations(0.0, 1e12)), 10001)
 
 
+class TestPulsation(unittest.TestCase):
+    """La respiration des LED : bornee, planchee, et vivante."""
+
+    def test_toujours_entre_le_plancher_et_un(self):
+        for t in (0.0, 0.1, 0.7, 3.14, 12.5, 100.0):
+            v = temps.pulsation(t, mini=0.35)
+            self.assertGreaterEqual(v, 0.35 - 1e-9)
+            self.assertLessEqual(v, 1.0 + 1e-9)
+
+    def test_ca_bouge_vraiment(self):
+        """Une pulsation constante serait une LED fixe : le nom
+        mentirait."""
+        valeurs = {round(temps.pulsation(t), 3)
+                   for t in (0.0, 0.2, 0.4, 0.6, 0.8)}
+        self.assertGreater(len(valeurs), 2)
+
+    def test_le_plancher_est_respecte_meme_absurde(self):
+        self.assertLessEqual(temps.pulsation(0.0, mini=2.0), 1.0)
+        self.assertGreaterEqual(temps.pulsation(4.7, mini=-1.0), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

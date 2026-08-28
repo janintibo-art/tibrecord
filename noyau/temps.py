@@ -117,3 +117,20 @@ def sous_graduations(debut_ms, fin_ms, cibles=6, divisions=5):
             petits.append(t)
         t += pas
     return petits
+
+
+def pulsation(t, vitesse=5.0, mini=0.35):
+    """Niveau 0..1 qui respire avec le temps, sans jamais s'eteindre.
+
+    Sert aux LED des boutons pendant la lecture et l'enregistrement.
+    Le plancher `mini` compte : une LED qui s'eteint completement a
+    chaque battement semble clignoter en panne, alors qu'une LED qui
+    respire entre 35 %% et 100 %% semble vivante.
+
+    C'est une fonction pure de l'heure : elle se calcule dans les
+    minuteries DEJA en marche (tete de lecture, vu-metre), sans jamais
+    ajouter d'horloge rien que pour elle.
+    """
+    mini = max(0.0, min(1.0, mini))
+    v = 0.5 + 0.5 * math.sin(t * vitesse)
+    return mini + (1.0 - mini) * v

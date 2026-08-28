@@ -48,7 +48,7 @@ from kivy.uix.widget import Widget
 from noyau import (__version__, audio, bibliotheque as bib,
                    enregistrement, spectre as noyau_spectre, stockage,
                    travail, vignettes)
-from noyau.temps import horloge_precise
+from noyau.temps import horloge_precise, pulsation
 from onde import Onde, Regle, horloge, position_texte
 
 # ---------------------------------------------------------------- palette
@@ -333,6 +333,48 @@ class Bouton(Button):
     def set_couleur(self, couleur):
         self.couleur = couleur
         self._maj()
+
+
+class BoutonLed(Bouton):
+    """Bouton avec une petite LED ronde en haut a droite.
+
+    Eteinte, elle reste faiblement visible : comme sur un vrai rack, on
+    voit l'emplacement de la lampe, donc on sait qu'elle peut s'allumer.
+    Le niveau se pose de l'exterieur, depuis une minuterie qui tourne
+    deja — ce widget n'a AUCUNE horloge a lui.
+    """
+
+    def __init__(self, led=(0.25, 0.90, 0.45), **kw):
+        self._led_couleur = led
+        self._led_niveau = 0.0
+        super().__init__(**kw)
+        with self.canvas.after:
+            self._c_led_fond = Color(0, 0, 0, 0.55)
+            self._led_fond = Ellipse()
+            self._c_led = Color(led[0], led[1], led[2], 0.12)
+            self._led = Ellipse()
+        self.bind(pos=self._maj_led, size=self._maj_led,
+                  state=self._maj_led)
+        self._maj_led()
+
+    def led(self, niveau):
+        """0 eteinte, 1 pleine. Entre les deux : la respiration."""
+        self._led_niveau = max(0.0, min(1.0, float(niveau)))
+        self._maj_led()
+
+    def _maj_led(self, *_a):
+        d = dp(9)
+        presse = self.state == "down"
+        x = self.right - d - dp(7)
+        y = self.top - d - dp(7) - (dp(2) if presse else 0)
+        self._led_fond.pos = (x - dp(1.5), y - dp(1.5))
+        self._led_fond.size = (d + dp(3), d + dp(3))
+        self._led.pos = (x, y)
+        self._led.size = (d, d)
+        c = self._led_couleur
+        n = self._led_niveau
+        self._c_led.rgba = (c[0], c[1], c[2],
+                            0.12 + 0.88 * n if n > 0 else 0.12)
 
 
 class Choix(Spinner):
@@ -930,6 +972,9 @@ class EcranEnreg(BoxLayout):
         super().__init__(orientation="vertical", spacing=dp(8), **kw)
         self.journal = journal
         self.sur_capture = sur_capture
+        # Pose par Root apres construction : recoit (actif, niveau) et
+        # allume la LED de l'onglet REC. Peut rester None.
+        self.sur_etat_rec = None
         self.enr = enregistrement.Enregistreur()
         self._tic = None
 
@@ -1055,9 +1100,17 @@ class EcranEnreg(BoxLayout):
         self.vu.crete = 0.0
         self.scope.poser([])
         self._tic = Clock.schedule_interval(self._maj, 1 / 24.0)
+        if self.sur_etat_rec:
+            self.sur_etat_rec(True, 1.0)
         self.journal("Enregistrement a %s Hz." % self.spin_taux.text)
 
     def _maj(self, _dt):
+        # La LED de l'onglet respire au rythme de CETTE minuterie, qui
+        # tourne de toute facon pendant la capture : aucune horloge en
+        # plus, et elle s'arrete forcement avec elle.
+        if self.sur_etat_rec:
+            self.sur_etat_rec(True, pulsation(time.time(), vitesse=3.2,
+                                              mini=0.30))
         self.lbl_temps.text = horloge(self.enr.duree_s)
         db = self.enr.niveau_db()
         self.vu.poser(db)
@@ -1081,6 +1134,8 @@ class EcranEnreg(BoxLayout):
         if self._tic:
             self._tic.cancel()
             self._tic = None
+        if self.sur_etat_rec:
+            self.sur_etat_rec(False, 0.0)
         sample = self.enr.arreter()
         self.b_rec.text = "[b]●  ENREGISTRER[/b]\n[size=10sp]Nouvelle prise audio[/size]"
         self.b_rec.set_couleur(ROUGE)
@@ -1122,15 +1177,24 @@ class EcranEdit(BoxLayout):
             "Editeur audio", "Selection precise, lecture et traitements non destructifs"))
 
         r_e = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(5))
-        for txt, fn, coul, part in (
-                ("RETOUR", self.retour, GRIS, 0.72),
-                ("LIRE", self.lire, VERT, 1.0),
-                ("PAUSE", self.pauser, (0.72, 0.55, 0.13, 1), 0.86),
-                ("STOP", self.stopper, GRIS, 0.72)):
-            b = Bouton(text=txt, couleur=coul, font_size=dp(12),
-                       size_hint_x=part)
-            b.bind(on_release=lambda w, f=fn: f())
-            r_e.add_widget(b)
+        b_ret = Bouton(text="RETOUR", couleur=GRIS, font_size=dp(12),
+                       size_hint_x=0.72)
+        b_ret.bind(on_release=lambda *_: self.retour())
+        r_e.add_widget(b_ret)
+        self.b_lire = BoutonLed(text="LIRE", couleur=VERT,
+                                led=(0.35, 0.95, 0.55), font_size=dp(12))
+        self.b_lire.bind(on_release=lambda *_: self.lire())
+        r_e.add_widget(self.b_lire)
+        self.b_pause = BoutonLed(text="PAUSE",
+                                 couleur=(0.72, 0.55, 0.13, 1),
+                                 led=(1.0, 0.80, 0.25),
+                                 font_size=dp(12), size_hint_x=0.86)
+        self.b_pause.bind(on_release=lambda *_: self.pauser())
+        r_e.add_widget(self.b_pause)
+        b_stp = Bouton(text="STOP", couleur=GRIS, font_size=dp(12),
+                       size_hint_x=0.72)
+        b_stp.bind(on_release=lambda *_: self.stopper())
+        r_e.add_widget(b_stp)
         corps.add_widget(r_e)
 
         self.lbl_nom = Label(text="(aucun son)", size_hint_y=None,
@@ -1564,6 +1628,8 @@ class EcranEdit(BoxLayout):
             # on retient donc NOUS quel segment est en train de jouer,
             # et la pause devient un arret dont on note l'endroit.
             self._seg = (depart, b)
+            self.b_lire.led(1.0)
+            self.b_pause.led(0.0)
             self._suivre_tete()
             self._suivre_spectre()
         except Exception as e:  # noqa: BLE001
@@ -1588,6 +1654,8 @@ class EcranEdit(BoxLayout):
         self._seg = None
         self._pause_frac = pos
         self._arreter_spectre()
+        self.b_lire.led(0.0)
+        self.b_pause.led(1.0)
         self.onde.poser_tete(pos)
         if self.sample is not None:
             duree = self.sample.duration_ms
@@ -1666,12 +1734,15 @@ class EcranEdit(BoxLayout):
         f = avancement_lecture()
         if f is None:
             self._seg = None
+            self.b_lire.led(0.0)
+            self.b_pause.led(0.0)
             self._arreter_tete()
             return False
         a, b = self._seg if self._seg else (self.onde.sel_debut,
                                             self.onde.sel_fin)
         pos = a + (b - a) * f
         self.onde.poser_tete(pos)
+        self.b_lire.led(pulsation(time.time(), vitesse=4.0, mini=0.45))
         if self.sample is not None:
             duree = self.sample.duration_ms
             n = len(self.sample.data)
@@ -1683,6 +1754,8 @@ class EcranEdit(BoxLayout):
         self._pause_frac = None
         self._seg = None
         self._arreter_spectre()
+        self.b_lire.led(0.0)
+        self.b_pause.led(0.0)
         self._arreter_tete()
         if self.sample is not None:
             self.spectre.charger(self.sample)
@@ -2226,7 +2299,10 @@ class EcranTuto(BoxLayout):
     TEXTE = """Tibrecord
 
 REC
-  Appuie sur ENREGISTRER. Le minuteur, le vu-metre et l'oscilloscope
+  Appuie sur ENREGISTRER. Pendant la capture, l'onglet REC porte une
+  LED rouge qui bat : meme depuis un autre ecran, tu vois qu'un
+  enregistrement tourne. Elle s'eteint a l'arret.
+  Le minuteur, le vu-metre et l'oscilloscope
   suivent la prise en direct. Peak et RMS sont visibles simultanement.
   Vise entre -12 et -6 dB : au-dela le rouge signale l'ecretage.
   Qualite : 44100 Hz par defaut. Descendre economise de la place.
@@ -2250,7 +2326,10 @@ EDITION
   il suit ce qui joue, douze images par seconde, avec des barres qui
   montent d'un coup et retombent doucement, comme un vrai vu-metre.
 
-  Le transport est en haut, sous le compteur :
+  Le transport est en haut, sous le compteur. LIRE et PAUSE portent
+  une petite LED : verte qui respire pendant la lecture, ambre fixe
+  en pause. Eteintes, elles restent faiblement visibles, comme les
+  lampes d'un vrai rack.
   RETOUR  revient au debut de la selection. Si ca jouait, ca rejoue.
   LIRE    joue la selection. Apres une pause, reprend ou c'etait.
   PAUSE   arrete en retenant l'endroit exact. La tete reste posee
@@ -2397,7 +2476,14 @@ class Root(BoxLayout):
         barre = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(5))
         self.tabs = []
         for i, nom in enumerate(self.ONGLETS):
-            b = Bouton(text=nom, font_size=dp(11), rayon=6)
+            if nom == "REC":
+                # La LED de l'onglet est le seul temoin d'une capture en
+                # cours quand on est parti regarder un autre ecran : sans
+                # elle, on oublie un enregistrement qui tourne.
+                b = BoutonLed(text=nom, font_size=dp(11), rayon=6,
+                              led=(1.0, 0.30, 0.32))
+            else:
+                b = Bouton(text=nom, font_size=dp(11), rayon=6)
             b.bind(on_release=lambda w, k=i: self.afficher(k))
             self.tabs.append(b)
             barre.add_widget(b)
@@ -2434,7 +2520,15 @@ class Root(BoxLayout):
             self.ec_biblio,
             self._fabriquer("AIDE", EcranTuto),
         ]
+        if isinstance(self.ecrans[0], EcranEnreg):
+            self.ecrans[0].sur_etat_rec = self._signaler_rec
         self.afficher(0)
+
+    def _signaler_rec(self, actif, niveau):
+        """Allume ou eteint la LED de l'onglet REC."""
+        tab = self.tabs[0] if self.tabs else None
+        if isinstance(tab, BoutonLed):
+            tab.led(niveau if actif else 0.0)
 
     def _maj_fond(self, *_a):
         self._bg.pos, self._bg.size = self.pos, self.size

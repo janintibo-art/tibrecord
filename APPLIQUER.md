@@ -1,18 +1,20 @@
-# Patch 14 — a poser par-dessus le patch 13
+# Patch 15 — a poser par-dessus le patch 14
 
-Version 0.6.0 : le spectre anime pendant la lecture (etape 4).
+Version 0.7.0 : les LED (etape 5).
 
-- A l'arret, l'analyseur resume le son entier comme avant.
-- Pendant la lecture, il suit la position : 12 images par seconde,
-  fenetre courte centree sur la tete de lecture, montee immediate et
-  retombee amortie comme un vrai vu-metre.
-- Le calcul vit dans noyau/spectre.py, teste : une sinusoide a 440 Hz
-  doit allumer la bande de 440 Hz, le silence donne zero, et le cout
-  par image est mesure par un test (budget 12 i/s).
-- L'animation s'arrete a la pause, au stop, a la fin du son et au
-  changement d'onglet — la lecon du voyant REC, appliquee partout.
+- LIRE porte une LED verte qui respire pendant la lecture.
+- PAUSE porte une LED ambre, fixe tant qu'on est en pause.
+- L'onglet REC porte une LED rouge qui bat pendant la capture :
+  visible depuis n'importe quel ecran, elle empeche d'oublier un
+  enregistrement qui tourne.
+- Eteintes, les LED restent faiblement visibles, comme les lampes
+  d'un vrai rack.
 
-Fichiers : main.py, noyau/spectre.py, noyau/__init__.py,
-tests/test_spectre.py, tests/verificateur.py.
+AUCUNE horloge ajoutee : les LED respirent depuis les minuteries qui
+tournent deja (tete de lecture a 30 i/s, vu-metre REC a 24 i/s), et
+s'arretent donc forcement avec elles.
 
-Tests attendus : 149.
+Fichiers : main.py, noyau/temps.py (pulsation), noyau/__init__.py,
+tests/test_temps.py.
+
+Tests attendus : 152.
