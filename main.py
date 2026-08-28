@@ -46,8 +46,8 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
 from noyau import (__version__, audio, bibliotheque as bib, effets,
-                   enregistrement, spectre as noyau_spectre, stockage,
-                   travail, vignettes)
+                   enregistrement, montage, spectre as noyau_spectre,
+                   stockage, travail, vignettes)
 from noyau.temps import horloge_precise, pulsation
 from onde import Onde, Regle, horloge, position_texte
 
@@ -1163,6 +1163,7 @@ class EcranEdit(BoxLayout):
         self._serie = travail.Serie()
         self._pause_frac = None
         self._seg = None
+        self._presse_papiers = None
         self._tic_spectre = None
         self._spectre_vif = []
 
@@ -1371,6 +1372,23 @@ class EcranEdit(BoxLayout):
         corps.add_widget(fx)
         self._changer_effet(self.spin_fx, self.spin_fx.text)
 
+        corps.add_widget(TitreSection(
+            "Montage", "Couper, coller, boucler — jointures sans clic"))
+        r_m = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+        for txt, fn in (("Couper", self.mont_couper),
+                        ("Copier", self.mont_copier),
+                        ("Coller", self.mont_coller),
+                        ("Suppr.", self.mont_supprimer),
+                        ("Boucler", self.mont_boucler)):
+            b = Bouton(text=txt, font_size=dp(10.5))
+            b.bind(on_release=lambda w, f=fn: f())
+            r_m.add_widget(b)
+        corps.add_widget(r_m)
+        self.lbl_pp = Label(text="presse-papiers : vide",
+                            size_hint_y=None, height=dp(16),
+                            font_size=dp(9.5), color=TEXTE_2)
+        corps.add_widget(self.lbl_pp)
+
         corps.add_widget(TitreSection("Traitements rapides"))
         r_t = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         for txt, fn in (("Rogner", self.rogner),
@@ -1410,6 +1428,116 @@ class EcranEdit(BoxLayout):
         self.lbl_nom.text = nom or sample.name
         self._maj_mesures()
         self._maj_rack_metres()
+
+    # ------------------------------------------------------------ montage
+    SEUIL_FOND_S = 15.0  # au-dela, le montage passe en tache de fond
+
+    def _poser_resultat_montage(self, resultat, message):
+        self._memoriser()
+        self.sample = resultat
+        self.onde.charger(self.sample)
+        self.spectre.charger(self.sample)
+        self._maj_mesures()
+        self._maj_rack_metres(self.sample)
+        self.journal(message)
+
+    def _montage(self, titre, calcul, message):
+        """Execute une operation de montage, en fond si le son est long.
+
+        Mesure : recopier les listes d'une prise de trois minutes coute
+        pres de deux secondes sur telephone. En dessous du seuil, le
+        direct evite une fenetre qui clignote pour rien.
+        """
+        if self.sample.duration_ms > self.SEUIL_FOND_S * 1000.0:
+            self._en_fond(titre, calcul,
+                          lambda r: self._poser_resultat_montage(
+                              r, message))
+            return
+        try:
+            self._poser_resultat_montage(calcul(), message)
+        except ValueError as e:
+            self.journal(str(e))
+        except Exception as e:  # noqa: BLE001
+            self.journal("%s impossible : %s" % (titre, e))
+
+    def _maj_presse_papiers(self):
+        pp = self._presse_papiers
+        self.lbl_pp.text = "presse-papiers : vide" if pp is None else             "presse-papiers : %.2f s" % (pp.duration_ms / 1000.0)
+
+    def mont_copier(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        a, b = self.onde.bornes_ms()
+        self._presse_papiers = montage.copier(self.sample, a, b)
+        self._maj_presse_papiers()
+        self.journal("Copie : %.2f s."
+                     % (self._presse_papiers.duration_ms / 1000.0))
+
+    def mont_couper(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        a, b = self.onde.bornes_ms()
+        copie = self.sample.copy()
+
+        def calcul():
+            reste, portion = montage.couper(copie, a, b)
+            return reste, portion
+
+        def apres(resultat):
+            reste, portion = resultat
+            self._presse_papiers = portion
+            self._maj_presse_papiers()
+            self._poser_resultat_montage(
+                reste, "Coupe : %.2f s au presse-papiers."
+                % (portion.duration_ms / 1000.0))
+
+        if copie.duration_ms > self.SEUIL_FOND_S * 1000.0:
+            self._en_fond("Couper", calcul, apres)
+            return
+        try:
+            apres(calcul())
+        except ValueError as e:
+            self.journal(str(e))
+
+    def mont_supprimer(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        a, b = self.onde.bornes_ms()
+        copie = self.sample.copy()
+        self._montage("Supprimer",
+                      lambda: montage.supprimer(copie, a, b),
+                      "Portion supprimee, jointure fondue.")
+
+    def mont_coller(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        if self._presse_papiers is None or not self._presse_papiers.data:
+            self.journal("Le presse-papiers est vide : Copier ou "
+                         "Couper d'abord.")
+            return
+        a, _b = self.onde.bornes_ms()
+        copie = self.sample.copy()
+        pp = self._presse_papiers
+
+        # Le collage se fait au DEBUT de la selection : la poignee
+        # gauche est le curseur d'insertion, c'est elle qu'on place.
+        self._montage("Coller",
+                      lambda: montage.inserer(copie, a, pp),
+                      "Colle a %.2f s." % (a / 1000.0))
+
+    def mont_boucler(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        a, b = self.onde.bornes_ms()
+        copie = self.sample.copy()
+        self._montage("Boucler",
+                      lambda: montage.boucler(copie, a, b, fois=4),
+                      "Selection bouclee 4 fois. ANNULER pour revenir.")
 
     # ------------------------------------------------------------ effets
     def _changer_effet(self, _w, nom):
@@ -2451,6 +2579,18 @@ EDITION
   STOP    arrete et oublie tout.
   OUVRIR WAV et SAUVEGARDER sont plus bas, sous le titre Fichier :
   ils ne servent qu'une fois par session.
+
+MONTAGE
+  Couper   retire la selection et la met au presse-papiers.
+  Copier   met la selection au presse-papiers sans toucher au son.
+  Coller   insere le presse-papiers au DEBUT de la selection : la
+           poignee gauche est ton curseur d'insertion.
+  Suppr.   retire la selection, sans toucher au presse-papiers.
+  Boucler  repete la selection quatre fois : deux secondes propres
+           deviennent un motif.
+  Toutes les jointures sont fondues sur 6 ms : pas de clic. Chaque
+  jointure consomme donc 6 ms — c'est le prix d'une coupe propre.
+  ANNULER revient en arriere, comme partout.
 
 EFFETS
   Sous le rack : choisis un effet dans la liste, ses molettes

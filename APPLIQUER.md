@@ -1,24 +1,23 @@
-# Patch 16 — a poser par-dessus le patch 15
+# Patch 17 — a poser par-dessus le patch 16
 
-Version 0.8.0 : les EFFETS (etape 6, premier paquet).
+Version 0.9.0 : le MONTAGE.
 
-Sept effets dans noyau/effets.py, tous en Python pur, tous testes sur
-leur resultat audible :
-  Delai, Reverbe (Schroeder), Tremolo, Bitcrush, Vari-speed,
-  Inversion, Polarite.
+Nouvelle section dans EDITION, entre l'onde et les traitements :
+  Couper / Copier / Coller / Suppr. / Boucler, avec presse-papiers
+  affiche sous les boutons.
 
-Nouvelle section EFFETS dans EDITION, sous le rack :
-  - liste deroulante, molettes qui changent selon l'effet choisi
-    (construites depuis le CATALOGUE du noyau : ajouter un effet
-    la-bas suffit a le faire apparaitre dans l'application)
-  - APERCU EFFET : l'effet sur la selection, joue au retour
-  - APPLIQUER EFFET : le son entier, en arriere-plan avec la fenetre
-    de patience ; ANNULER revient en arriere
+Toutes les jointures sont fondues sur 6 ms : pas de clic. Le test
+central le PROUVE : une coupe brute sur le pire signal possible fait
+sauter le signal de 1.0, la meme coupe fondue reste sous 0.25.
 
-Couts mesures (3 s de son, ici) : delai 164 ms, reverbe 229 ms,
-tremolo 13 ms, bitcrush 45 ms, vari-speed 17 ms. Tout passe en fond.
+Coller insere au DEBUT de la selection : la poignee gauche sert de
+curseur d'insertion. Boucler repete la selection 4 fois. Tout
+supprimer est refuse (erreur de selection presque certaine).
 
-Fichiers : main.py, noyau/effets.py, noyau/__init__.py,
-tests/test_effets.py, tests/verificateur.py.
+Sur les prises de plus de 15 s, le montage passe en tache de fond
+avec la fenetre de patience (2 s mesurees sur 3 min de son).
 
-Tests attendus : 176.
+Fichiers : main.py, noyau/montage.py, noyau/__init__.py,
+tests/test_montage.py, tests/verificateur.py.
+
+Tests attendus : 191.
