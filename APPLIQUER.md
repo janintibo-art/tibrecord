@@ -1,23 +1,24 @@
-# Patch 17 — a poser par-dessus le patch 16
+# Patch 18 — a poser par-dessus le patch 17
 
-Version 0.9.0 : le MONTAGE.
+VERSION 1.0.0 : la decoupe automatique. La feuille de route d'origine
+est complete.
 
-Nouvelle section dans EDITION, entre l'onde et les traitements :
-  Couper / Copier / Coller / Suppr. / Boucler, avec presse-papiers
-  affiche sous les boutons.
+Le geste fondateur : enregistrer dix coups d'affilee, repartir avec
+dix WAV propres.
 
-Toutes les jointures sont fondues sur 6 ms : pas de clic. Le test
-central le PROUVE : une coupe brute sur le pire signal possible fait
-sauter le signal de 1.0, la meme coupe fondue reste sous 0.25.
+1. DETECTER LES FRAPPES : enveloppe + plancher de bruit + double
+   seuil avec rearmement strict. Les coupes s'affichent en traits
+   ambres SUR L'ONDE avant toute decoupe. Molette de sensibilite.
+2. DECOUPER EN N SONS : chaque frappe devient un WAV (attaque
+   gardee par pre-roll, bords fondus), range dans un dossier de la
+   bibliotheque au nom choisi. Silhouettes calculees au passage.
 
-Coller insere au DEBUT de la selection : la poignee gauche sert de
-curseur d'insertion. Boucler repete la selection 4 fois. Tout
-supprimer est refuse (erreur de selection presque certaine).
+La detection est independante du niveau d'enregistrement (seuils
+relatifs, teste). Le bruit seul ne declenche rien (dynamique minimale
+exigee, teste). Une queue de kick ne declenche pas de fausse frappe
+(rearmement strict, teste).
 
-Sur les prises de plus de 15 s, le montage passe en tache de fond
-avec la fenetre de patience (2 s mesurees sur 3 min de son).
+Fichiers : main.py, onde.py, noyau/decoupe.py, noyau/__init__.py,
+tests/test_decoupe.py, tests/verificateur.py.
 
-Fichiers : main.py, noyau/montage.py, noyau/__init__.py,
-tests/test_montage.py, tests/verificateur.py.
-
-Tests attendus : 191.
+Tests attendus : 204.

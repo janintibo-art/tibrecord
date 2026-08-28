@@ -19,16 +19,18 @@ from kivy.uix.widget import Widget
 from noyau import audio
 from noyau.temps import graduations, sous_graduations
 
-FOND = (0.06, 0.06, 0.08, 1)
-GRILLE = (0.22, 0.22, 0.26, 1)
-ONDE = (0.30, 0.85, 0.95, 1)
-ONDE_HORS = (0.30, 0.32, 0.38, 1)
-SELECTION = (0.30, 0.85, 0.95, 0.13)
-POIGNEE = (0.95, 0.55, 0.15, 1)
-TETE = (1.0, 0.85, 0.25, 1)
-GRADUATION = (0.52, 0.54, 0.62, 1)
-SOUS_GRADUATION = (0.30, 0.31, 0.37, 1)
-GRADUATION_TXT = (0.66, 0.68, 0.74, 1)
+FOND = (0.025, 0.030, 0.040, 1)
+GRILLE = (0.15, 0.18, 0.22, 1)
+GRILLE_FINE = (0.09, 0.11, 0.14, 1)
+BORD = (0.18, 0.25, 0.29, 1)
+ONDE = (0.18, 0.82, 0.90, 1)
+ONDE_HORS = (0.24, 0.28, 0.34, 1)
+SELECTION = (0.12, 0.76, 0.84, 0.12)
+POIGNEE = (0.96, 0.58, 0.16, 1)
+TETE = (1.0, 0.84, 0.24, 1)
+GRADUATION = (0.48, 0.54, 0.62, 1)
+SOUS_GRADUATION = (0.24, 0.28, 0.34, 1)
+GRADUATION_TXT = (0.66, 0.71, 0.79, 1)
 
 
 class Onde(Widget):
@@ -51,6 +53,7 @@ class Onde(Widget):
         self.sel_debut, self.sel_fin = 0.0, 1.0
         self.tete = None
         self.on_change = on_change
+        self.marqueurs = []  # fractions 0..1 : les coupes proposees
         self.regle = None
         self._prise = None
         self.bind(pos=self.redessiner, size=self.redessiner)
@@ -63,6 +66,7 @@ class Onde(Widget):
         self.tete = None
         self._pics = []
         self._fenetre_calculee = None
+        self.marqueurs = []
         self.redessiner()
         if self.regle is not None:
             self.regle.redessiner()
@@ -156,12 +160,32 @@ class Onde(Widget):
             Color(*FOND)
             RoundedRectangle(pos=(x0, y0), size=(w, h), radius=[8])
 
-            # reperes de temps : une ligne par division visible
+            # Grille type editeur audio : reperes principaux verticaux,
+            # niveaux horizontaux plus fins et axe zero plus present.
+            Color(*GRILLE_FINE)
+            for j in (1, 3):
+                y = y0 + h * j / 4.0
+                Line(points=[x0, y, x0 + w, y], width=1)
             Color(*GRILLE)
             for i in range(1, 8):
                 x = x0 + w * i / 8.0
                 Line(points=[x, y0, x, y0 + h], width=1)
-            Line(points=[x0, mid, x0 + w, mid], width=1)
+            Line(points=[x0, mid, x0 + w, mid], width=1.15)
+            Color(*BORD)
+            Line(rounded_rectangle=(x0, y0, w, h, 8), width=1.0)
+
+            # Les coupes proposees par la decoupe automatique : de fins
+            # traits ambres. On les VOIT avant de decouper, et on peut
+            # refaire la detection avec une autre sensibilite si elles
+            # tombent mal.
+            if self.marqueurs:
+                Color(1.0, 0.72, 0.20, 0.85)
+                for m in self.marqueurs:
+                    fm = (m - self.fen_debut) / largeur
+                    if 0.0 <= fm <= 1.0:
+                        xm = x0 + fm * w
+                        Line(points=[xm, y0 + dp(2), xm, y0 + h - dp(2)],
+                             width=1)
 
             if not self._pics:
                 return
@@ -221,10 +245,19 @@ class Onde(Widget):
         x = self.x + ft * self.width
         y0, h = self.y, self.height
         with self.canvas.after:
+            # Halo tres discret autour de la tete de lecture : lisible sans
+            # donner un effet neon de jeu video.
+            Color(TETE[0], TETE[1], TETE[2], 0.16)
+            Line(points=[x, y0, x, y0 + h], width=dp(5.0))
             Color(*TETE)
             Line(points=[x, y0, x, y0 + h], width=dp(1.6))
             Triangle(points=[x - dp(5), y0 + h, x + dp(5), y0 + h,
                              x, y0 + h - dp(7)])
+
+    def poser_marqueurs(self, fractions):
+        """Pose les traits de coupe et redessine. Vide pour effacer."""
+        self.marqueurs = list(fractions or [])
+        self.redessiner()
 
     def poser_tete(self, fraction):
         """Deplace la tete de lecture. None l'efface."""

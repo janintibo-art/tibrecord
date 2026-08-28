@@ -45,9 +45,10 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
-from noyau import (__version__, audio, bibliotheque as bib, effets,
-                   enregistrement, montage, spectre as noyau_spectre,
-                   stockage, travail, vignettes)
+from noyau import (__version__, audio, bibliotheque as bib, decoupe,
+                   effets, enregistrement, montage,
+                   spectre as noyau_spectre, stockage, travail,
+                   vignettes)
 from noyau.temps import horloge_precise, pulsation
 from onde import Onde, Regle, horloge, position_texte
 
@@ -1164,6 +1165,7 @@ class EcranEdit(BoxLayout):
         self._pause_frac = None
         self._seg = None
         self._presse_papiers = None
+        self._segments = []
         self._tic_spectre = None
         self._spectre_vif = []
 
@@ -1389,6 +1391,33 @@ class EcranEdit(BoxLayout):
                             font_size=dp(9.5), color=TEXTE_2)
         corps.add_widget(self.lbl_pp)
 
+        corps.add_widget(TitreSection(
+            "Decoupe automatique",
+            "Une prise de dix coups devient dix sons, en deux gestes"))
+        dec = Panneau(orientation="vertical", size_hint_y=None,
+                      padding=dp(8), spacing=dp(6))
+        dec.bind(minimum_height=dec.setter("height"))
+        r_d0 = BoxLayout(size_hint_y=None, height=dp(96), spacing=dp(8))
+        self.pot_sens = Potard("Sensib.", 0.0, 1.0, 0.5, decimals=2)
+        r_d0.add_widget(self.pot_sens)
+        col = BoxLayout(orientation="vertical", spacing=dp(6))
+        b_det = Bouton(text="DETECTER LES FRAPPES", couleur=CYAN,
+                       font_size=dp(11), size_hint_y=None, height=dp(44))
+        b_det.bind(on_release=lambda *_: self.detecter_frappes())
+        col.add_widget(b_det)
+        self.b_dec = Bouton(text="DECOUPER EN SONS", couleur=GRIS,
+                            font_size=dp(11), size_hint_y=None,
+                            height=dp(44), disabled=True)
+        self.b_dec.bind(on_release=lambda *_: self.decouper_en_sons())
+        col.add_widget(self.b_dec)
+        r_d0.add_widget(col)
+        dec.add_widget(r_d0)
+        self.lbl_dec = Label(text="regle la sensibilite, puis detecte",
+                             size_hint_y=None, height=dp(16),
+                             font_size=dp(9.5), color=TEXTE_2)
+        dec.add_widget(self.lbl_dec)
+        corps.add_widget(dec)
+
         corps.add_widget(TitreSection("Traitements rapides"))
         r_t = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         for txt, fn in (("Rogner", self.rogner),
@@ -1428,6 +1457,89 @@ class EcranEdit(BoxLayout):
         self.lbl_nom.text = nom or sample.name
         self._maj_mesures()
         self._maj_rack_metres()
+
+    # ------------------------------------------------- decoupe automatique
+    def detecter_frappes(self):
+        """Cherche les frappes et les dessine sur l'onde.
+
+        Rien n'est decoupe a ce stade : on regarde d'abord ou tombent
+        les traits ambres, on ajuste la sensibilite si besoin, et
+        seulement ensuite on decoupe. Voir avant d'agir.
+        """
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        copie = self.sample.copy()
+        sens = float(self.pot_sens.value)
+
+        def calcul():
+            return decoupe.detecter_frappes(copie, sensibilite=sens)
+
+        def apres(segments):
+            self._segments = segments
+            duree = max(1e-9, self.sample.duration_ms)
+            traits = []
+            for a, b in segments:
+                traits.append(a / duree)
+                traits.append(b / duree)
+            self.onde.poser_marqueurs(traits)
+            n = len(segments)
+            if n == 0:
+                self.b_dec.disabled = True
+                self.b_dec.set_couleur(GRIS)
+                self.lbl_dec.text = ("aucune frappe nette : monte la "
+                                     "sensibilite et redetecte")
+                self.journal("Aucune frappe detectee.")
+            else:
+                self.b_dec.disabled = False
+                self.b_dec.text = "DECOUPER EN %d SON%s" % (
+                    n, "S" if n > 1 else "")
+                self.b_dec.set_couleur(VERT)
+                self.lbl_dec.text = ("les traits ambres montrent les "
+                                     "coupes — redetecte pour ajuster")
+                self.journal("%d frappe%s detectee%s." % (
+                    n, "s" if n > 1 else "", "s" if n > 1 else ""))
+
+        self._en_fond("Detection des frappes", calcul, apres)
+
+    def decouper_en_sons(self):
+        if self.sample is None or not self._segments:
+            self.journal("Detecte les frappes d'abord.")
+            return
+        NomPopup("Nom des sons decoupes", "frappe",
+                 self._faire_decoupe).open()
+
+    def _faire_decoupe(self, nom):
+        nom = bib.nom_propre(nom, "frappe")
+        copie = self.sample.copy()
+        segments = list(self._segments)
+
+        def calcul():
+            sons = decoupe.decouper(copie, segments)
+            # Chaque prise decoupee a son dossier : dix kicks en vrac a
+            # la racine, c'est ce que la bibliotheque sait deja ranger,
+            # mais autant les livrer ranges.
+            dossier = bib.creer_dossier(dossier_sons(), nom)
+            chemins = []
+            for i, son in enumerate(sons, 1):
+                chemin = bib.chemin_libre(dossier, "%s %d" % (nom, i))
+                audio.write_wav(chemin, son)
+                chemins.append(chemin)
+            return dossier, chemins
+
+        def apres(resultat):
+            dossier, chemins = resultat
+            self.onde.poser_marqueurs([])
+            self._segments = []
+            self.b_dec.disabled = True
+            self.b_dec.text = "DECOUPER EN SONS"
+            self.b_dec.set_couleur(GRIS)
+            self.lbl_dec.text = "decoupe faite — retrouve tout dans SONS"
+            self.journal("%d son%s dans %s. Onglet SONS pour les voir."
+                         % (len(chemins), "s" if len(chemins) > 1 else "",
+                            os.path.basename(dossier)))
+
+        self._en_fond("Decoupe en %d sons" % len(segments), calcul, apres)
 
     # ------------------------------------------------------------ montage
     SEUIL_FOND_S = 15.0  # au-dela, le montage passe en tache de fond
@@ -2579,6 +2691,21 @@ EDITION
   STOP    arrete et oublie tout.
   OUVRIR WAV et SAUVEGARDER sont plus bas, sous le titre Fichier :
   ils ne servent qu'une fois par session.
+
+DECOUPE AUTOMATIQUE
+  Le geste pour lequel Tibrecord existe : enregistre dix coups de
+  percussion d'affilee, puis
+  1. DETECTER LES FRAPPES — des traits ambres marquent chaque coup
+     sur l'onde. Rien n'est encore decoupe : regarde ou ils tombent.
+  2. Si un coup faible manque, monte la Sensibilite et redetecte.
+     Si le bruit declenche, baisse-la.
+  3. DECOUPER EN N SONS — donne un nom, et chaque coup devient un
+     WAV propre (attaque gardee, bords fondus), range dans son
+     dossier de la bibliotheque.
+  La detection est independante du niveau : une prise faible et une
+  prise forte donnent les memes coupes. Deux coups colles sans
+  silence entre eux forment UN son : c'est le bon decoupage pour un
+  roulement.
 
 MONTAGE
   Couper   retire la selection et la met au presse-papiers.
