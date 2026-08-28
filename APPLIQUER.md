@@ -1,20 +1,24 @@
-# Patch 15 — a poser par-dessus le patch 14
+# Patch 16 — a poser par-dessus le patch 15
 
-Version 0.7.0 : les LED (etape 5).
+Version 0.8.0 : les EFFETS (etape 6, premier paquet).
 
-- LIRE porte une LED verte qui respire pendant la lecture.
-- PAUSE porte une LED ambre, fixe tant qu'on est en pause.
-- L'onglet REC porte une LED rouge qui bat pendant la capture :
-  visible depuis n'importe quel ecran, elle empeche d'oublier un
-  enregistrement qui tourne.
-- Eteintes, les LED restent faiblement visibles, comme les lampes
-  d'un vrai rack.
+Sept effets dans noyau/effets.py, tous en Python pur, tous testes sur
+leur resultat audible :
+  Delai, Reverbe (Schroeder), Tremolo, Bitcrush, Vari-speed,
+  Inversion, Polarite.
 
-AUCUNE horloge ajoutee : les LED respirent depuis les minuteries qui
-tournent deja (tete de lecture a 30 i/s, vu-metre REC a 24 i/s), et
-s'arretent donc forcement avec elles.
+Nouvelle section EFFETS dans EDITION, sous le rack :
+  - liste deroulante, molettes qui changent selon l'effet choisi
+    (construites depuis le CATALOGUE du noyau : ajouter un effet
+    la-bas suffit a le faire apparaitre dans l'application)
+  - APERCU EFFET : l'effet sur la selection, joue au retour
+  - APPLIQUER EFFET : le son entier, en arriere-plan avec la fenetre
+    de patience ; ANNULER revient en arriere
 
-Fichiers : main.py, noyau/temps.py (pulsation), noyau/__init__.py,
-tests/test_temps.py.
+Couts mesures (3 s de son, ici) : delai 164 ms, reverbe 229 ms,
+tremolo 13 ms, bitcrush 45 ms, vari-speed 17 ms. Tout passe en fond.
 
-Tests attendus : 152.
+Fichiers : main.py, noyau/effets.py, noyau/__init__.py,
+tests/test_effets.py, tests/verificateur.py.
+
+Tests attendus : 176.

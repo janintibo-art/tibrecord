@@ -157,8 +157,8 @@ def horloges_non_arretees(fichier):
 # Enregistreur(...)`, puis verifie que chaque `self.enr.machin` existe
 # vraiment dans la classe.
 
-MODULES_NOYAU = ("audio", "bibliotheque", "enregistrement", "spectre",
-                 "stockage", "temps", "travail", "vignettes")
+MODULES_NOYAU = ("audio", "bibliotheque", "effets", "enregistrement",
+                 "spectre", "stockage", "temps", "travail", "vignettes")
 
 
 def _classes_du_noyau():

@@ -45,7 +45,7 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
-from noyau import (__version__, audio, bibliotheque as bib,
+from noyau import (__version__, audio, bibliotheque as bib, effets,
                    enregistrement, spectre as noyau_spectre, stockage,
                    travail, vignettes)
 from noyau.temps import horloge_precise, pulsation
@@ -1333,6 +1333,44 @@ class EcranEdit(BoxLayout):
         rack.add_widget(actions_rack)
         corps.add_widget(rack)
 
+        # ------------------------------------------------------ effets
+        corps.add_widget(TitreSection(
+            "Effets", "Choisis, regle les molettes, ecoute, applique"))
+        fx = Panneau(orientation="vertical", size_hint_y=None,
+                     padding=dp(8), spacing=dp(6))
+        fx.bind(minimum_height=fx.setter("height"))
+
+        r_fx0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        self.spin_fx = Choix(text=effets.CATALOGUE[0][0],
+                             values=[n for n, _ in effets.CATALOGUE])
+        self.spin_fx.bind(text=self._changer_effet)
+        r_fx0.add_widget(self.spin_fx)
+        fx.add_widget(r_fx0)
+
+        self.lbl_fx = Label(text="", size_hint_y=None, height=dp(18),
+                            font_size=dp(10), color=TEXTE_2)
+        fx.add_widget(self.lbl_fx)
+
+        # Les molettes changent avec l'effet : la rangee est reconstruite
+        # a chaque choix, a partir du CATALOGUE du noyau. Ajouter un
+        # effet la-bas suffit a le faire apparaitre ici.
+        self.rangee_fx = BoxLayout(size_hint_y=None, height=dp(96),
+                                   spacing=dp(8))
+        fx.add_widget(self.rangee_fx)
+        self.pots_fx = {}
+
+        r_fx1 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        b_fxp = Bouton(text="APERCU EFFET", couleur=VERT, font_size=dp(11))
+        b_fxp.bind(on_release=lambda *_: self.apercu_effet())
+        r_fx1.add_widget(b_fxp)
+        b_fxa = Bouton(text="APPLIQUER EFFET", couleur=CYAN,
+                       font_size=dp(11))
+        b_fxa.bind(on_release=lambda *_: self.appliquer_effet())
+        r_fx1.add_widget(b_fxa)
+        fx.add_widget(r_fx1)
+        corps.add_widget(fx)
+        self._changer_effet(self.spin_fx, self.spin_fx.text)
+
         corps.add_widget(TitreSection("Traitements rapides"))
         r_t = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         for txt, fn in (("Rogner", self.rogner),
@@ -1372,6 +1410,82 @@ class EcranEdit(BoxLayout):
         self.lbl_nom.text = nom or sample.name
         self._maj_mesures()
         self._maj_rack_metres()
+
+    # ------------------------------------------------------------ effets
+    def _changer_effet(self, _w, nom):
+        """Reconstruit les molettes pour l'effet choisi."""
+        entree = effets.par_nom(nom)
+        if entree is None:
+            return
+        self.lbl_fx.text = entree["desc"]
+        self.rangee_fx.clear_widgets()
+        self.pots_fx = {}
+        params = entree["params"]
+        self.rangee_fx.height = dp(96) if params else dp(20)
+        if not params:
+            self.rangee_fx.add_widget(Label(
+                text="(aucun reglage : cet effet est tout ou rien)",
+                font_size=dp(10), color=TEXTE_2))
+            return
+        for cle, titre, mini, maxi, defaut, unite, deci in params:
+            pot = Potard(titre, float(mini), float(maxi), float(defaut),
+                         unite=unite, decimals=deci)
+            self.pots_fx[cle] = pot
+            self.rangee_fx.add_widget(pot)
+
+    def _params_effet(self):
+        entree = effets.par_nom(self.spin_fx.text)
+        out = {}
+        for cle, _t, _mn, _mx, _d, _u, deci in entree["params"]:
+            v = self.pots_fx[cle].value
+            out[cle] = int(round(v)) if deci <= 0 else float(v)
+        return out
+
+    def apercu_effet(self):
+        """L'effet sur la selection seulement, joue au retour du calcul.
+
+        La selection et non le son entier : on juge un delai sur deux
+        secondes, pas sur toute la prise, et le calcul reste court.
+        """
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        nom = self.spin_fx.text
+        bout = self._selection()
+        params = self._params_effet()
+
+        def calcul():
+            return effets.appliquer(nom, bout, **params)
+
+        def apres(resultat):
+            jouer_sample(resultat, "fx_preview")
+            self.journal("Apercu %s : %.1f s" % (
+                nom, resultat.duration_ms / 1000.0))
+
+        self._en_fond("Apercu %s" % nom, calcul, apres)
+
+    def appliquer_effet(self):
+        if self.sample is None:
+            self.journal("Ouvre ou enregistre un son d'abord.")
+            return
+        nom = self.spin_fx.text
+        copie = self.sample.copy()
+        params = self._params_effet()
+
+        def calcul():
+            return effets.appliquer(nom, copie, **params)
+
+        def apres(resultat):
+            self._memoriser()
+            self.sample = resultat
+            self.onde.charger(self.sample)
+            self.spectre.charger(self.sample)
+            self._maj_mesures()
+            self._maj_rack_metres(self.sample)
+            self.journal("%s applique : %.1f s. ANNULER pour revenir."
+                         % (nom, resultat.duration_ms / 1000.0))
+
+        self._en_fond(nom, calcul, apres)
 
     # -------------------------------------------------- tache de fond
     def _en_fond(self, titre, calcul, apres):
@@ -2337,6 +2451,22 @@ EDITION
   STOP    arrete et oublie tout.
   OUVRIR WAV et SAUVEGARDER sont plus bas, sous le titre Fichier :
   ils ne servent qu'une fois par session.
+
+EFFETS
+  Sous le rack : choisis un effet dans la liste, ses molettes
+  apparaissent, APERCU EFFET le joue sur la selection, APPLIQUER
+  EFFET transforme le son entier. ANNULER revient en arriere.
+  Delai       echo qui se repete ; Temps regle l'ecart, Repet. la
+              trainee, Mix le dosage.
+  Reverbe     une piece autour du son ; Taille du placard a la salle.
+  Tremolo     le volume ondule, comme un vieil ampli.
+  Bitcrush    lo-fi : moins de bits = vieille console.
+  Vari-speed  la bande magnetique : plus vite = plus aigu et plus
+              court, plus lent = plus grave et plus long.
+  Inversion   le son a l'envers. Essaie Inversion + Reverbe +
+              Inversion : la reverberation ARRIVE avant le son.
+  Polarite    miroir du signal, pour aligner deux prises.
+  Delai et Reverbe rallongent le son de leur queue : c'est voulu.
 
 LES TRAITEMENTS LONGS
   Les presets et le rack tournent en arriere-plan : une fenetre de
